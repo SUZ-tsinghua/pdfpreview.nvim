@@ -69,14 +69,19 @@ function M.new(s, config)
 		local function click()
 			local pos = vim.fn.getmousepos()
 			local origin = api.nvim_win_get_position(win)
-			local row, col = pos.screenrow - origin[1] - 1, pos.screencol - origin[2] - 1
-			if row < 1 or row > api.nvim_win_get_height(win) or col < 1 or col > api.nvim_win_get_width(win) then
+			local clicked_row, clicked_col = pos.screenrow - origin[1] - 1, pos.screencol - origin[2] - 1
+			if
+				clicked_row < 1
+				or clicked_row > api.nvim_win_get_height(win)
+				or clicked_col < 1
+				or clicked_col > api.nvim_win_get_width(win)
+			then
 				close()
 				if pos.winid ~= 0 and api.nvim_win_is_valid(pos.winid) then
 					api.nvim_set_current_win(pos.winid)
 				end
 			elseif choose then
-				pick(row)
+				pick(clicked_row)
 			else
 				-- Retain normal selection/yanking inside the translated text.
 				api.nvim_feedkeys(api.nvim_replace_termcodes("<LeftMouse>", true, false, true), "n", false)

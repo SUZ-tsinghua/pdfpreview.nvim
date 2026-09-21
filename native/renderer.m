@@ -50,9 +50,11 @@ static NSData *allocatePixels(NSUInteger bytes) {
 static NSData *allocateTransientPixels(NSUInteger bytes) {
     void *data = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (data == MAP_FAILED) return nil;
-    return [[NSData alloc] initWithBytesNoCopy:data length:bytes deallocator:^(void *pointer, NSUInteger length) {
-        munmap(pointer, length);
-    }];
+    return [[NSData alloc] initWithBytesNoCopy:data
+                                        length:bytes
+                                   deallocator:^(void *pointer, NSUInteger length) {
+                                       munmap(pointer, length);
+                                   }];
 }
 
 static NSData *mapOutput(NSString *file, NSUInteger bytes) {
@@ -69,23 +71,24 @@ static NSData *mapOutput(NSString *file, NSUInteger bytes) {
     }
     // File readers share the same VM pages. No intermediate output buffer or
     // second pixel copy is needed before the terminal can read the raster.
-    return [[NSData alloc] initWithBytesNoCopy:mapping length:bytes deallocator:^(void *data, NSUInteger length) {
-        munmap(data, length);
-        close(descriptor);
-    }];
+    return [[NSData alloc] initWithBytesNoCopy:mapping
+                                        length:bytes
+                                   deallocator:^(void *data, NSUInteger length) {
+                                       munmap(data, length);
+                                       close(descriptor);
+                                   }];
 }
 
-static NSString *draw(CGPDFPageRef page, NSInteger px, NSInteger py,
-                      NSInteger x, NSInteger y, NSInteger width, NSInteger height, NSData *pixels) {
-    CGContextRef context = CGBitmapContextCreate((void *)pixels.bytes, width, height, 8, width * 4,
-                                                rasterColorSpace,
-                                                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+static NSString *draw(CGPDFPageRef page, NSInteger px, NSInteger py, NSInteger x, NSInteger y, NSInteger width,
+                      NSInteger height, NSData *pixels) {
+    CGContextRef context = CGBitmapContextCreate((void *)pixels.bytes, width, height, 8, width * 4, rasterColorSpace,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     if (!context) return @"Could not allocate raster";
     CGContextSetRGBFillColor(context, 1, 1, 1, 1);
     CGContextFillRect(context, CGRectMake(0, 0, width, height));
     CGContextTranslateCTM(context, -x, -(py - y - height));
-    CGRect box = CGRectIntersection(CGPDFPageGetBoxRect(page, kCGPDFCropBox),
-                                    CGPDFPageGetBoxRect(page, kCGPDFMediaBox));
+    CGRect box =
+        CGRectIntersection(CGPDFPageGetBoxRect(page, kCGPDFCropBox), CGPDFPageGetBoxRect(page, kCGPDFMediaBox));
     CGFloat pageWidth = box.size.width, pageHeight = box.size.height;
     if (CGRectIsEmpty(box) || !isfinite(pageWidth) || !isfinite(pageHeight)) {
         CGContextRelease(context);
@@ -98,18 +101,18 @@ static NSString *draw(CGPDFPageRef page, NSInteger px, NSInteger py,
     // CGPDFPageGetDrawingTransform only scales down. Explicit scale preserves
     // the requested dimensions above the PDF's point size.
     CGContextScaleCTM(context, px / pageWidth, py / pageHeight);
-    CGContextConcatCTM(context, CGPDFPageGetDrawingTransform(page, kCGPDFCropBox,
-                          CGRectMake(0, 0, pageWidth, pageHeight), 0, false));
+    CGContextConcatCTM(
+        context, CGPDFPageGetDrawingTransform(page, kCGPDFCropBox, CGRectMake(0, 0, pageWidth, pageHeight), 0, false));
     CGContextClipToRect(context, CGPDFPageGetBoxRect(page, kCGPDFCropBox));
     CGContextDrawPDFPage(context, page);
     CGContextRelease(context);
     return nil;
 }
 
-static PixelTile *sourceTile(CGPDFDocumentRef document, NSInteger pageNumber, NSInteger px, NSInteger py,
-                             NSInteger x, NSInteger y, NSInteger limit, BOOL forComposition, NSString **error) {
-    NSString *key = [NSString stringWithFormat:@"%c:%ld:%ld:%ld:%ld:%ld:%ld",
-                     forComposition ? 's' : 't', (long)pageNumber, (long)px, (long)py, (long)x, (long)y, (long)limit];
+static PixelTile *sourceTile(CGPDFDocumentRef document, NSInteger pageNumber, NSInteger px, NSInteger py, NSInteger x,
+                             NSInteger y, NSInteger limit, BOOL forComposition, NSString **error) {
+    NSString *key = [NSString stringWithFormat:@"%c:%ld:%ld:%ld:%ld:%ld:%ld", forComposition ? 's' : 't',
+                                               (long)pageNumber, (long)px, (long)py, (long)x, (long)y, (long)limit];
     PixelTile *tile = pixelCache[key];
     if (tile) {
         cacheHits++;
@@ -148,25 +151,26 @@ static PixelTile *sourceTile(CGPDFDocumentRef document, NSInteger pageNumber, NS
 }
 
 static NSString *render(CGPDFDocumentRef document, NSDictionary *request) {
-    for (NSString *key in @[@"page", @"px", @"py", @"x", @"y", @"width", @"height"]) {
+    for (NSString *key in @[ @"page", @"px", @"py", @"x", @"y", @"width", @"height" ]) {
         id value = request[key];
         if (![value isKindOfClass:[NSNumber class]] || !isfinite([value doubleValue]) ||
-            [value doubleValue] != [value longLongValue]) return @"Invalid raster dimensions";
+            [value doubleValue] != [value longLongValue])
+            return @"Invalid raster dimensions";
     }
     NSInteger pageNumber = [request[@"page"] integerValue];
     NSInteger px = [request[@"px"] integerValue], py = [request[@"py"] integerValue];
     NSInteger x = [request[@"x"] integerValue], y = [request[@"y"] integerValue];
     NSInteger width = [request[@"width"] integerValue], height = [request[@"height"] integerValue];
     NSString *file = request[@"file"];
-    if (pageNumber < 1 || (size_t)pageNumber > CGPDFDocumentGetNumberOfPages(document) ||
-        px < 1 || py < 1 || px > 16384 || py > 16384 || x < 0 || y < 0 ||
-        width < 1 || height < 1 || width > px || height > py || x > px - width || y > py - height ||
-        (uint64_t)width * height > 64 * 1024 * 1024 ||
-        ![file isKindOfClass:[NSString class]] || !file.isAbsolutePath) return @"Invalid raster request";
+    if (pageNumber < 1 || (size_t)pageNumber > CGPDFDocumentGetNumberOfPages(document) || px < 1 || py < 1 ||
+        px > 16384 || py > 16384 || x < 0 || y < 0 || width < 1 || height < 1 || width > px || height > py ||
+        x > px - width || y > py - height || (uint64_t)width * height > 64 * 1024 * 1024 ||
+        ![file isKindOfClass:[NSString class]] || !file.isAbsolutePath)
+        return @"Invalid raster request";
 
     BOOL raw = [request[@"format"] isEqual:@32];
-    NSData *pixels = raw ? mapOutput(file, (NSUInteger)width * height * 4)
-                        : allocatePixels((NSUInteger)width * height * 4);
+    NSData *pixels =
+        raw ? mapOutput(file, (NSUInteger)width * height * 4) : allocatePixels((NSUInteger)width * height * 4);
     if (!pixels) return @"Could not allocate output raster";
     // A direct path is useful for pixel-fidelity checks and renderer profiling.
     if ([request[@"cache"] isEqual:@NO]) {
@@ -183,10 +187,9 @@ static NSString *render(CGPDFDocumentRef document, NSDictionary *request) {
                     NSInteger right = MIN(x + width, tileX + (NSInteger)tile.width);
                     NSInteger bottom = MIN(y + height, tileY + (NSInteger)tile.height);
                     for (NSInteger row = top; row < bottom; row++) {
-                        const unsigned char *source = (const unsigned char *)tile.pixels.bytes +
-                            ((row - tileY) * tile.width + left - tileX) * 4;
-                        unsigned char *target = (unsigned char *)pixels.bytes +
-                            ((row - y) * width + left - x) * 4;
+                        const unsigned char *source =
+                            (const unsigned char *)tile.pixels.bytes + ((row - tileY) * tile.width + left - tileX) * 4;
+                        unsigned char *target = (unsigned char *)pixels.bytes + ((row - y) * width + left - x) * 4;
                         memcpy(target, source, (right - left) * 4);
                     }
                 }
@@ -197,12 +200,12 @@ static NSString *render(CGPDFDocumentRef document, NSDictionary *request) {
     CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
     if (!provider) return @"Could not create raster provider";
     CGImageRef image = CGImageCreate(width, height, 8, 32, width * 4, rasterColorSpace,
-                        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big,
-                        provider, NULL, false, kCGRenderingIntentDefault);
+                                     kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider, NULL, false,
+                                     kCGRenderingIntentDefault);
     CGDataProviderRelease(provider);
     if (!image) return @"Could not create raster image";
-    CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
-        (__bridge CFURLRef)[NSURL fileURLWithPath:file], CFSTR("public.png"), 1, NULL);
+    CGImageDestinationRef destination =
+        CGImageDestinationCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:file], CFSTR("public.png"), 1, NULL);
     BOOL ok = NO;
     if (destination) {
         CGImageDestinationAddImage(destination, image, NULL);
@@ -220,19 +223,19 @@ static BOOL surfaceAvailable(void) {
     return NO;
 }
 static BOOL numberInRange(id value, double minimum, double maximum, BOOL integer) {
-    return [value isKindOfClass:[NSNumber class]] && isfinite([value doubleValue]) &&
-        [value doubleValue] >= minimum && [value doubleValue] <= maximum &&
-        (!integer || [value doubleValue] == [value longLongValue]);
+    return [value isKindOfClass:[NSNumber class]] && isfinite([value doubleValue]) && [value doubleValue] >= minimum &&
+           [value doubleValue] <= maximum && (!integer || [value doubleValue] == [value longLongValue]);
 }
 static BOOL validSelections(id selections) {
     if (!selections) return YES;
     if (![selections isKindOfClass:[NSArray class]] || [selections count] > 8192) return NO;
     for (id rect in selections) {
         if (![rect isKindOfClass:[NSDictionary class]]) return NO;
-        for (NSString *key in @[@"x1", @"y1", @"x2", @"y2"])
-            if (!numberInRange(rect[key],-1e9,1e9,NO)) return NO;
+        for (NSString *key in @[ @"x1", @"y1", @"x2", @"y2" ])
+            if (!numberInRange(rect[key], -1e9, 1e9, NO)) return NO;
         if ([rect[@"x2"] doubleValue] < [rect[@"x1"] doubleValue] ||
-            [rect[@"y2"] doubleValue] < [rect[@"y1"] doubleValue]) return NO;
+            [rect[@"y2"] doubleValue] < [rect[@"y1"] doubleValue])
+            return NO;
     }
     return YES;
 }
@@ -258,12 +261,14 @@ static void applySelections(NSData *pixels, NSInteger width, NSInteger height, d
 }
 static NSUInteger pixelCacheBytes(void) {
     NSUInteger total = 0;
-    for (PixelTile *tile in pixelCache.allValues) total += tile.pixels.length;
+    for (PixelTile *tile in pixelCache.allValues)
+        total += tile.pixels.length;
     return total;
 }
 static NSUInteger gpuCacheBytes(void) {
     NSUInteger total = 0;
-    for (PixelTile *tile in pixelCache.allValues) if (tile.texture) total += tile.width * tile.height * 4;
+    for (PixelTile *tile in pixelCache.allValues)
+        if (tile.texture) total += tile.width * tile.height * 4;
     return total;
 }
 
@@ -284,16 +289,15 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
     if (key && (![key isKindOfClass:[NSString class]] || key.length == 0 || key.length > 512))
         return @"Invalid selection cache key";
     if (!validSelections(request[@"selections"])) return @"Invalid selection rectangles";
-    if (!numberInRange(request[@"height"],1,8192,YES) ||
-        ![pages isKindOfClass:[NSArray class]] || pages.count < 1 || pages.count > 16 ||
-        ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
+    if (!numberInRange(request[@"height"], 1, 8192, YES) || ![pages isKindOfClass:[NSArray class]] || pages.count < 1 ||
+        pages.count > 16 || ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
         return @"Invalid refinement request";
     NSUInteger height = [request[@"height"] unsignedIntegerValue];
     uint64_t total = 0;
     NSMutableSet *files = [NSMutableSet set];
     for (NSDictionary *part in parts) {
-        if (![part isKindOfClass:[NSDictionary class]] || !numberInRange(part[@"width"],1,8192,YES) ||
-            !numberInRange(part[@"offset"],0,8192,YES) || ![part[@"file"] isKindOfClass:[NSString class]] ||
+        if (![part isKindOfClass:[NSDictionary class]] || !numberInRange(part[@"width"], 1, 8192, YES) ||
+            !numberInRange(part[@"offset"], 0, 8192, YES) || ![part[@"file"] isKindOfClass:[NSString class]] ||
             ![part[@"file"] isAbsolutePath] || [files containsObject:part[@"file"]])
             return @"Invalid refinement output";
         [files addObject:part[@"file"]];
@@ -302,14 +306,14 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
     if (total > 16 * 1024 * 1024) return @"Refinement exceeds the viewport pixel budget";
     for (NSDictionary *page in pages) {
         if (![page isKindOfClass:[NSDictionary class]] ||
-            !numberInRange(page[@"page"],1,CGPDFDocumentGetNumberOfPages(document),YES) ||
-            !numberInRange(page[@"left"],-1e9,1e9,NO) || !numberInRange(page[@"top"],-1e9,1e9,NO) ||
-            !numberInRange(page[@"width"],0.001,1e9,NO) || !numberInRange(page[@"height"],0.001,1e9,NO))
+            !numberInRange(page[@"page"], 1, CGPDFDocumentGetNumberOfPages(document), YES) ||
+            !numberInRange(page[@"left"], -1e9, 1e9, NO) || !numberInRange(page[@"top"], -1e9, 1e9, NO) ||
+            !numberInRange(page[@"width"], 0.001, 1e9, NO) || !numberInRange(page[@"height"], 0.001, 1e9, NO))
             return @"Invalid refinement page";
     }
     if (reuse) {
-        if (!key || ![selectionKey isEqual:key] || height != selectionHeight ||
-            parts.count != selectionParts.count || ![pages isEqual:selectionPages])
+        if (!key || ![selectionKey isEqual:key] || height != selectionHeight || parts.count != selectionParts.count ||
+            ![pages isEqual:selectionPages])
             return @"Refined selection cache is unavailable";
         for (NSUInteger i = 0; i < parts.count; i++) {
             if (![parts[i][@"width"] isEqual:selectionParts[i][@"width"]] ||
@@ -331,20 +335,21 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
         if (!output) return @"Could not allocate refinement output";
         if (reuse) {
             memcpy((void *)output.bytes, selectionPixels[index].bytes, bytes);
-            applySelections(output,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
+            applySelections(output, width, height, [part[@"offset"] doubleValue], request[@"selections"]);
             continue;
         }
         NSData *pixels = key ? allocateTransientPixels(bytes) : output;
         if (!pixels) return @"Could not allocate refinement output";
-        CGContextRef context = CGBitmapContextCreate((void *)pixels.bytes, width, height, 8, width * 4,
-            rasterColorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGContextRef context =
+            CGBitmapContextCreate((void *)pixels.bytes, width, height, 8, width * 4, rasterColorSpace,
+                                  kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
         if (!context) return @"Could not create refinement context";
-        CGContextSetRGBFillColor(context,32.0/255,36.0/255,44.0/255,1);
-        CGContextFillRect(context,CGRectMake(0,0,width,height));
+        CGContextSetRGBFillColor(context, 32.0 / 255, 36.0 / 255, 44.0 / 255, 1);
+        CGContextFillRect(context, CGRectMake(0, 0, width, height));
         for (NSDictionary *item in pages) {
-            CGPDFPageRef page = CGPDFDocumentGetPage(document,[item[@"page"] integerValue]);
-            CGRect box = CGRectIntersection(CGPDFPageGetBoxRect(page,kCGPDFCropBox),
-                                             CGPDFPageGetBoxRect(page,kCGPDFMediaBox));
+            CGPDFPageRef page = CGPDFDocumentGetPage(document, [item[@"page"] integerValue]);
+            CGRect box =
+                CGRectIntersection(CGPDFPageGetBoxRect(page, kCGPDFCropBox), CGPDFPageGetBoxRect(page, kCGPDFMediaBox));
             CGFloat pageWidth = box.size.width, pageHeight = box.size.height;
             if (CGRectIsEmpty(box) || !isfinite(pageWidth) || !isfinite(pageHeight)) {
                 CGContextRelease(context);
@@ -356,17 +361,17 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
             }
             CGFloat drawnWidth = [item[@"width"] doubleValue], drawnHeight = [item[@"height"] doubleValue];
             CGRect target = CGRectMake([item[@"left"] doubleValue] - [part[@"offset"] doubleValue],
-                height - [item[@"top"] doubleValue] - drawnHeight, drawnWidth, drawnHeight);
+                                       height - [item[@"top"] doubleValue] - drawnHeight, drawnWidth, drawnHeight);
             CGContextSaveGState(context);
-            CGContextClipToRect(context,target);
-            CGContextSetRGBFillColor(context,1,1,1,1);
-            CGContextFillRect(context,target);
-            CGContextTranslateCTM(context,target.origin.x,target.origin.y);
-            CGContextScaleCTM(context,drawnWidth/pageWidth,drawnHeight/pageHeight);
-            CGContextConcatCTM(context,CGPDFPageGetDrawingTransform(page,kCGPDFCropBox,
-                CGRectMake(0,0,pageWidth,pageHeight),0,false));
-            CGContextClipToRect(context,CGPDFPageGetBoxRect(page,kCGPDFCropBox));
-            CGContextDrawPDFPage(context,page);
+            CGContextClipToRect(context, target);
+            CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+            CGContextFillRect(context, target);
+            CGContextTranslateCTM(context, target.origin.x, target.origin.y);
+            CGContextScaleCTM(context, drawnWidth / pageWidth, drawnHeight / pageHeight);
+            CGContextConcatCTM(context, CGPDFPageGetDrawingTransform(
+                                            page, kCGPDFCropBox, CGRectMake(0, 0, pageWidth, pageHeight), 0, false));
+            CGContextClipToRect(context, CGPDFPageGetBoxRect(page, kCGPDFCropBox));
+            CGContextDrawPDFPage(context, page);
             CGContextRestoreGState(context);
         }
         CGContextRelease(context);
@@ -374,7 +379,7 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
             [clean addObject:pixels];
             memcpy((void *)output.bytes, pixels.bytes, bytes);
         }
-        applySelections(output,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
+        applySelections(output, width, height, [part[@"offset"] doubleValue], request[@"selections"]);
     }
     if (key && !reuse) {
         selectionPixels = clean;
@@ -388,7 +393,6 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
 }
 static id<MTLCommandQueue> composeQueue;
 static id<MTLComputePipelineState> composePipeline;
-
 
 @interface CompositionTarget : NSObject
 @property(nonatomic, strong) NSData *pixels;
@@ -419,8 +423,8 @@ static CompositionTarget *outputTarget(NSString *file, NSUInteger bytes, NSSet *
     CompositionTarget *target = outputTargets[file];
     struct stat current;
     if (target && target.pixels.length == bytes && lstat(file.fileSystemRepresentation, &current) == 0 &&
-        S_ISREG(current.st_mode) && current.st_size == (off_t)bytes &&
-        current.st_dev == target.device && current.st_ino == target.inode) {
+        S_ISREG(current.st_mode) && current.st_size == (off_t)bytes && current.st_dev == target.device &&
+        current.st_ino == target.inode) {
         target.used = ++outputTick;
         return target;
     }
@@ -440,10 +444,16 @@ static CompositionTarget *outputTarget(NSString *file, NSUInteger bytes, NSSet *
     }
     NSData *pixels = mapOutput(file, bytes);
     if (!pixels || lstat(file.fileSystemRepresentation, &current) != 0 || !S_ISREG(current.st_mode) ||
-        current.st_size != (off_t)bytes) return nil;
-    id<MTLBuffer> buffer = [composeDevice newBufferWithBytesNoCopy:(void *)pixels.bytes length:capacity
-        options:MTLResourceStorageModeShared
-        deallocator:^(void *pointer, NSUInteger length) { (void)pointer; (void)length; (void)[pixels bytes]; }];
+        current.st_size != (off_t)bytes)
+        return nil;
+    id<MTLBuffer> buffer = [composeDevice newBufferWithBytesNoCopy:(void *)pixels.bytes
+                                                            length:capacity
+                                                           options:MTLResourceStorageModeShared
+                                                       deallocator:^(void *pointer, NSUInteger length) {
+                                                           (void)pointer;
+                                                           (void)length;
+                                                           (void)[pixels bytes];
+                                                       }];
     if (!buffer) return nil;
     target = [CompositionTarget new];
     target.pixels = pixels;
@@ -460,16 +470,15 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     // Validate the entire request before allocating files or encoding GPU work.
     NSArray *pages = request[@"pages"], *parts = request[@"parts"];
     if (!validSelections(request[@"selections"])) return @"Invalid selection rectangles";
-    if (!numberInRange(request[@"height"], 1, 8192, YES) ||
-        ![pages isKindOfClass:[NSArray class]] || pages.count < 1 || pages.count > 16 ||
-        ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
+    if (!numberInRange(request[@"height"], 1, 8192, YES) || ![pages isKindOfClass:[NSArray class]] || pages.count < 1 ||
+        pages.count > 16 || ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
         return @"Invalid viewport request";
     uint64_t pixelsTotal = 0;
     NSMutableSet *outputFiles = [NSMutableSet set];
     for (NSDictionary *part in parts) {
-        if (![part isKindOfClass:[NSDictionary class]] || !numberInRange(part[@"width"],1,8192,YES) ||
-            !numberInRange(part[@"offset"],0,8192,YES) ||
-            ![part[@"file"] isKindOfClass:[NSString class]] || ![part[@"file"] isAbsolutePath])
+        if (![part isKindOfClass:[NSDictionary class]] || !numberInRange(part[@"width"], 1, 8192, YES) ||
+            !numberInRange(part[@"offset"], 0, 8192, YES) || ![part[@"file"] isKindOfClass:[NSString class]] ||
+            ![part[@"file"] isAbsolutePath])
             return @"Invalid viewport part";
         if ([outputFiles containsObject:part[@"file"]]) return @"Duplicate viewport output";
         [outputFiles addObject:part[@"file"]];
@@ -478,10 +487,10 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     if (pixelsTotal > 8 * 1024 * 1024) return @"Viewport exceeds the composition pixel budget";
     for (NSDictionary *page in pages) {
         if (![page isKindOfClass:[NSDictionary class]] ||
-            !numberInRange(page[@"page"],1,CGPDFDocumentGetNumberOfPages(document),YES) ||
-            !numberInRange(page[@"px"],1,4096,YES) || !numberInRange(page[@"py"],1,4096,YES) ||
-            !numberInRange(page[@"left"],-1e9,1e9,NO) || !numberInRange(page[@"top"],-1e9,1e9,NO) ||
-            !numberInRange(page[@"width"],0.001,1e9,NO) || !numberInRange(page[@"height"],0.001,1e9,NO))
+            !numberInRange(page[@"page"], 1, CGPDFDocumentGetNumberOfPages(document), YES) ||
+            !numberInRange(page[@"px"], 1, 4096, YES) || !numberInRange(page[@"py"], 1, 4096, YES) ||
+            !numberInRange(page[@"left"], -1e9, 1e9, NO) || !numberInRange(page[@"top"], -1e9, 1e9, NO) ||
+            !numberInRange(page[@"width"], 0.001, 1e9, NO) || !numberInRange(page[@"height"], 0.001, 1e9, NO))
             return @"Invalid viewport page";
     }
     if (!surfaceAvailable()) return @"Metal viewport composition is unavailable";
@@ -494,7 +503,8 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
             @"using namespace metal;\n"
             @"struct Page { float2 origin; float2 size; };\n"
             @"struct Layout { uint width; uint height; uint count; uint padding; Page pages[16]; };\n"
-            @"kernel void compose_main(device uchar4 *output [[buffer(0)]], constant Layout &layout [[buffer(1)]], array<texture2d<float>,16> sources [[texture(0)]], uint2 point [[thread_position_in_grid]]) {\n"
+            @"kernel void compose_main(device uchar4 *output [[buffer(0)]], constant Layout &layout [[buffer(1)]], "
+            @"array<texture2d<float>,16> sources [[texture(0)]], uint2 point [[thread_position_in_grid]]) {\n"
             @"    if (point.x >= layout.width || point.y >= layout.height) return;\n"
             @"    float4 color = float4(32.0/255,36.0/255,44.0/255,1);\n"
             @"    constexpr sampler filtering(coord::normalized,filter::linear,address::clamp_to_edge);\n"
@@ -506,7 +516,9 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
             @"}\n";
         id<MTLLibrary> library = [composeDevice newLibraryWithSource:code options:nil error:&error];
         if (!library) return error.localizedDescription;
-        composePipeline = [composeDevice newComputePipelineStateWithFunction:[library newFunctionWithName:@"compose_main"] error:&error];
+        composePipeline =
+            [composeDevice newComputePipelineStateWithFunction:[library newFunctionWithName:@"compose_main"]
+                                                         error:&error];
         if (!composePipeline) return error.localizedDescription;
     }
     NSInteger height = [request[@"height"] integerValue];
@@ -515,17 +527,25 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     for (NSDictionary *page in request[@"pages"]) {
         NSInteger n = [page[@"page"] integerValue];
         NSInteger px = [page[@"px"] integerValue], py = [page[@"py"] integerValue];
-        if (n < 1 || (size_t)n > CGPDFDocumentGetNumberOfPages(document) || px < 1 || py < 1 || px > 4096 || py > 4096) return @"Invalid source page";
+        if (n < 1 || (size_t)n > CGPDFDocumentGetNumberOfPages(document) || px < 1 || py < 1 || px > 4096 || py > 4096)
+            return @"Invalid source page";
         NSString *error;
-        PixelTile *tile = sourceTile(document, n, px, py, 0, 0, MAX(px,py), YES, &error);
+        PixelTile *tile = sourceTile(document, n, px, py, 0, 0, MAX(px, py), YES, &error);
         if (!tile) return error;
         if (!tile.texture) {
-            MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:tile.width height:tile.height mipmapped:NO];
+            MTLTextureDescriptor *desc =
+                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                   width:tile.width
+                                                                  height:tile.height
+                                                               mipmapped:NO];
             desc.storageMode = MTLStorageModeShared;
             desc.usage = MTLTextureUsageShaderRead;
             tile.texture = [composeDevice newTextureWithDescriptor:desc];
             if (!tile.texture) return @"Could not allocate source texture";
-            [tile.texture replaceRegion:MTLRegionMake2D(0,0,tile.width,tile.height) mipmapLevel:0 withBytes:tile.pixels.bytes bytesPerRow:tile.width*4];
+            [tile.texture replaceRegion:MTLRegionMake2D(0, 0, tile.width, tile.height)
+                            mipmapLevel:0
+                              withBytes:tile.pixels.bytes
+                            bytesPerRow:tile.width * 4];
             // The texture owns the copied pixels. Keep one source backing per
             // cache entry; raster tiles use a separate key and retain CPU data.
             tile.pixels = nil;
@@ -538,38 +558,50 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     if (!command || !encoder) return @"Could not create a Metal command encoder";
     [encoder setComputePipelineState:composePipeline];
-    for (NSUInteger i=0; i<16; i++) [encoder setTexture:sources[MIN(i,sources.count-1)].texture atIndex:i];
+    for (NSUInteger i = 0; i < 16; i++)
+        [encoder setTexture:sources[MIN(i, sources.count - 1)].texture atIndex:i];
     NSString *failure;
     for (NSDictionary *part in request[@"parts"]) {
         NSInteger width = [part[@"width"] integerValue];
         CGFloat offset = [part[@"offset"] doubleValue];
         NSUInteger bytes = width * height * 4, pageSize = getpagesize();
         CompositionTarget *output = outputTarget(part[@"file"], bytes, outputFiles);
-        if (!output) { failure = @"Could not allocate bounded composition output"; break; }
+        if (!output) {
+            failure = @"Could not allocate bounded composition output";
+            break;
+        }
         NSData *pixels = output.pixels;
         id<MTLBuffer> target = output.buffer;
         // CPU-dirty every VM page before each GPU write, including reuse.
-        for (NSUInteger i=0; i<bytes; i+=pageSize) ((volatile unsigned char *)pixels.bytes)[i]=0;
-        struct Page { vector_float2 origin, size; };
-        struct { uint32_t width, height, count, padding; struct Page pages[16]; } layout = {0};
-        layout.width=(uint32_t)width; layout.height=(uint32_t)height; layout.count=(uint32_t)sources.count;
-        for (NSUInteger i=0; i<sources.count; i++) {
-            NSDictionary *page=request[@"pages"][i];
-            layout.pages[i].origin=(vector_float2){[page[@"left"] floatValue]-offset,[page[@"top"] floatValue]};
-            layout.pages[i].size=(vector_float2){[page[@"width"] floatValue],[page[@"height"] floatValue]};
+        for (NSUInteger i = 0; i < bytes; i += pageSize)
+            ((volatile unsigned char *)pixels.bytes)[i] = 0;
+        struct Page {
+            vector_float2 origin, size;
+        };
+        struct {
+            uint32_t width, height, count, padding;
+            struct Page pages[16];
+        } layout = {0};
+        layout.width = (uint32_t)width;
+        layout.height = (uint32_t)height;
+        layout.count = (uint32_t)sources.count;
+        for (NSUInteger i = 0; i < sources.count; i++) {
+            NSDictionary *page = request[@"pages"][i];
+            layout.pages[i].origin = (vector_float2){[page[@"left"] floatValue] - offset, [page[@"top"] floatValue]};
+            layout.pages[i].size = (vector_float2){[page[@"width"] floatValue], [page[@"height"] floatValue]};
         }
         [encoder setBuffer:target offset:0 atIndex:0];
         [encoder setBytes:&layout length:sizeof(layout) atIndex:1];
-        [encoder dispatchThreads:MTLSizeMake(width,height,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
+        [encoder dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
     }
     [encoder endEncoding];
     if (failure) return failure;
     [command commit];
     [command waitUntilCompleted];
-    if (command.status==MTLCommandBufferStatusError) return command.error.localizedDescription;
+    if (command.status == MTLCommandBufferStatusError) return command.error.localizedDescription;
     for (NSDictionary *part in parts)
-        applySelections(outputTargets[part[@"file"]].pixels,[part[@"width"] integerValue],height,
-                        [part[@"offset"] doubleValue],request[@"selections"]);
+        applySelections(outputTargets[part[@"file"]].pixels, [part[@"width"] integerValue], height,
+                        [part[@"offset"] doubleValue], request[@"selections"]);
     return nil;
 }
 
@@ -580,15 +612,15 @@ static NSArray *pageGeometry(CGPDFDocumentRef document) {
     for (size_t index = 1; index <= count; index++) {
         CGPDFPageRef page = CGPDFDocumentGetPage(document, index);
         if (!page) return nil;
-        CGRect box = CGRectIntersection(CGPDFPageGetBoxRect(page, kCGPDFCropBox),
-                                        CGPDFPageGetBoxRect(page, kCGPDFMediaBox));
+        CGRect box =
+            CGRectIntersection(CGPDFPageGetBoxRect(page, kCGPDFCropBox), CGPDFPageGetBoxRect(page, kCGPDFMediaBox));
         CGFloat width = box.size.width, height = box.size.height;
         if (CGRectIsEmpty(box) || !isfinite(width) || !isfinite(height)) return nil;
         if (CGPDFPageGetRotationAngle(page) % 180 != 0) {
             width = box.size.height;
             height = box.size.width;
         }
-        [pages addObject:@{ @"width": @(width), @"height": @(height) }];
+        [pages addObject:@{@"width" : @(width), @"height" : @(height)}];
     }
     return pages;
 }
@@ -599,12 +631,11 @@ static NSArray *pageGeometry(CGPDFDocumentRef document) {
 static NSDictionary *textPage(PDFDocument *document, CGPDFPageRef rasterPage, NSUInteger index) {
     PDFPage *page = [document pageAtIndex:index];
     NSString *string = page.string ?: @"";
-    if (string.length > 200000) return @{ @"error": @"PDF text page exceeds 200000 UTF-16 units" };
+    if (string.length > 200000) return @{@"error" : @"PDF text page exceeds 200000 UTF-16 units"};
     CGRect crop = CGRectIntersection(CGPDFPageGetBoxRect(rasterPage, kCGPDFCropBox),
                                      CGPDFPageGetBoxRect(rasterPage, kCGPDFMediaBox));
     CGFloat width = crop.size.width, height = crop.size.height;
-    if (CGRectIsEmpty(crop) || !isfinite(width) || !isfinite(height))
-        return @{ @"error": @"Invalid PDF text crop box" };
+    if (CGRectIsEmpty(crop) || !isfinite(width) || !isfinite(height)) return @{@"error" : @"Invalid PDF text crop box"};
     if (CGPDFPageGetRotationAngle(rasterPage) % 180 != 0) {
         width = crop.size.height;
         height = crop.size.width;
@@ -613,45 +644,61 @@ static NSDictionary *textPage(PDFDocument *document, CGPDFPageRef rasterPage, NS
     CGAffineTransform transform = CGPDFPageGetDrawingTransform(rasterPage, kCGPDFCropBox, display, 0, false);
     NSMutableArray<NSValue *> *words = [NSMutableArray array];
     [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
-                              options:NSStringEnumerationByWords | NSStringEnumerationSubstringNotRequired
-                           usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
-        (void)substring; (void)enclosing; (void)stop;
-        [words addObject:[NSValue valueWithRange:range]];
-    }];
+                               options:NSStringEnumerationByWords | NSStringEnumerationSubstringNotRequired
+                            usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
+                                (void)substring;
+                                (void)enclosing;
+                                (void)stop;
+                                [words addObject:[NSValue valueWithRange:range]];
+                            }];
     NSMutableArray *characters = [NSMutableArray array];
     NSMutableString *prefix = [NSMutableString string];
     NSCharacterSet *nonWhitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
     __block NSUInteger line = 1, word = 0;
-    [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
-                              options:NSStringEnumerationByComposedCharacterSequences
-                           usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
-        (void)enclosing; (void)stop;
-        if ([substring rangeOfCharacterFromSet:nonWhitespace].location == NSNotFound) {
-            [prefix appendString:substring];
-            if ([substring rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) line++;
-            return;
-        }
-        // Use the string-range API for geometry too. characterBoundsAtIndex:
-        // can omit inserted linefeeds from its index space on macOS, shifting
-        // every following line relative to page.string. A one-grapheme
-        // selection keeps text and bounds aligned and includes the line height.
-        PDFSelection *selection = [page selectionForRange:range];
-        if (!selection) return;
-        CGRect bounds = [selection boundsForPage:page];
-        if (CGRectIsEmpty(bounds) || CGRectIsInfinite(bounds) ||
-            !isfinite(bounds.origin.x) || !isfinite(bounds.origin.y) ||
-            !isfinite(bounds.size.width) || !isfinite(bounds.size.height)) return;
-        bounds = CGRectIntersection(display, CGRectApplyAffineTransform(bounds, transform));
-        if (CGRectIsEmpty(bounds)) return;
-        while (word < words.count && NSMaxRange(words[word].rangeValue) <= range.location) word++;
-        NSUInteger group = word * 2;
-        if (word < words.count && NSLocationInRange(range.location, words[word].rangeValue)) group++;
-        [characters addObject:@{ @"text": substring, @"prefix": [prefix copy], @"line": @(line), @"word": @(group),
-            @"x1": @(CGRectGetMinX(bounds) / width), @"x2": @(CGRectGetMaxX(bounds) / width),
-            @"y1": @((height - CGRectGetMaxY(bounds)) / height), @"y2": @((height - CGRectGetMinY(bounds)) / height) }];
-        [prefix setString:@""];
-    }];
-    return @{ @"text_page": @{ @"characters": characters } };
+    [string
+        enumerateSubstringsInRange:NSMakeRange(0, string.length)
+                           options:NSStringEnumerationByComposedCharacterSequences
+                        usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
+                            (void)enclosing;
+                            (void)stop;
+                            if ([substring rangeOfCharacterFromSet:nonWhitespace].location == NSNotFound) {
+                                [prefix appendString:substring];
+                                if ([substring rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location !=
+                                    NSNotFound)
+                                    line++;
+                                return;
+                            }
+                            // Use the string-range API for geometry too. characterBoundsAtIndex:
+                            // can omit inserted linefeeds from its index space on macOS, shifting
+                            // every following line relative to page.string. A one-grapheme
+                            // selection keeps text and bounds aligned and includes the line height.
+                            PDFSelection *selection = [page selectionForRange:range];
+                            if (!selection) return;
+                            CGRect bounds = [selection boundsForPage:page];
+                            if (CGRectIsEmpty(bounds) || CGRectIsInfinite(bounds) || !isfinite(bounds.origin.x) ||
+                                !isfinite(bounds.origin.y) || !isfinite(bounds.size.width) ||
+                                !isfinite(bounds.size.height))
+                                return;
+                            bounds = CGRectIntersection(display, CGRectApplyAffineTransform(bounds, transform));
+                            if (CGRectIsEmpty(bounds)) return;
+                            while (word < words.count && NSMaxRange(words[word].rangeValue) <= range.location)
+                                word++;
+                            NSUInteger group = word * 2;
+                            if (word < words.count && NSLocationInRange(range.location, words[word].rangeValue))
+                                group++;
+                            [characters addObject:@{
+                                @"text" : substring,
+                                @"prefix" : [prefix copy],
+                                @"line" : @(line),
+                                @"word" : @(group),
+                                @"x1" : @(CGRectGetMinX(bounds) / width),
+                                @"x2" : @(CGRectGetMaxX(bounds) / width),
+                                @"y1" : @((height - CGRectGetMaxY(bounds)) / height),
+                                @"y2" : @((height - CGRectGetMinY(bounds)) / height)
+                            }];
+                            [prefix setString:@""];
+                        }];
+    return @{@"text_page" : @{@"characters" : characters}};
 }
 
 int main(int argc, const char *argv[]) {
@@ -681,9 +728,8 @@ int main(int argc, const char *argv[]) {
             @autoreleasepool {
                 NSData *data = [NSData dataWithBytes:line length:length];
                 id request = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-                if (![request isKindOfClass:[NSDictionary class]] ||
-                    ![request[@"id"] isKindOfClass:[NSNumber class]]) {
-                    reply(@{ @"id": @0, @"error": @"Invalid JSON request" });
+                if (![request isKindOfClass:[NSDictionary class]] || ![request[@"id"] isKindOfClass:[NSNumber class]]) {
+                    reply(@{@"id" : @0, @"error" : @"Invalid JSON request"});
                     continue;
                 }
                 CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
@@ -691,17 +737,19 @@ int main(int argc, const char *argv[]) {
                     NSNumber *number = request[@"page"];
                     NSDictionary *result;
                     if (![number isKindOfClass:NSNumber.class] || number.doubleValue != number.integerValue ||
-                        number.integerValue < 1 || (NSUInteger)number.integerValue > CGPDFDocumentGetNumberOfPages(document)) {
-                        result = @{ @"error": @"Invalid text page number" };
+                        number.integerValue < 1 ||
+                        (NSUInteger)number.integerValue > CGPDFDocumentGetNumberOfPages(document)) {
+                        result = @{@"error" : @"Invalid text page number"};
                     } else {
                         @try {
                             if (!textDocument) textDocument = [[PDFDocument alloc] initWithURL:url];
-                            result = textDocument && !textDocument.isLocked ?
-                                textPage(textDocument, CGPDFDocumentGetPage(document, number.integerValue), number.integerValue - 1) :
-                                @{ @"error": @"PDFKit could not open the PDF text layer" };
+                            result = textDocument && !textDocument.isLocked
+                                         ? textPage(textDocument, CGPDFDocumentGetPage(document, number.integerValue),
+                                                    number.integerValue - 1)
+                                         : @{@"error" : @"PDFKit could not open the PDF text layer"};
                         } @catch (NSException *exception) {
                             (void)exception;
-                            result = @{ @"error": @"PDFKit could not extract this text page" };
+                            result = @{@"error" : @"PDFKit could not extract this text page"};
                         }
                     }
                     NSMutableDictionary *response = [result mutableCopy];
@@ -711,19 +759,43 @@ int main(int argc, const char *argv[]) {
                 }
                 if ([request[@"action"] isEqual:@"info"]) {
                     NSArray *pages = pageGeometry(document);
-                    if (pages) reply(@{ @"id": request[@"id"], @"protocol": @3, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes), @"selection_cache_bytes": @(selectionBytes) });
-                    else reply(@{ @"id": request[@"id"], @"error": @"Invalid or excessive PDF page geometry" });
+                    if (pages)
+                        reply(@{
+                            @"id" : request[@"id"],
+                            @"protocol" : @3,
+                            @"pages" : pages,
+                            @"surface" : @(surfaceAvailable()),
+                            @"cache_bytes" : @(pixelCacheBytes()),
+                            @"gpu_cache_bytes" : @(gpuCacheBytes()),
+                            @"output_cache_bytes" : @(outputBytes),
+                            @"selection_cache_bytes" : @(selectionBytes)
+                        });
+                    else
+                        reply(@{@"id" : request[@"id"], @"error" : @"Invalid or excessive PDF page geometry"});
                     continue;
                 }
                 NSUInteger hits = cacheHits, misses = cacheMisses;
                 BOOL composition = [request[@"action"] isEqual:@"compose"];
-                if (!composition) { [outputTargets removeAllObjects]; outputBytes = 0; }
-                NSString *error = composition ? compose(document, request) :
-                    [request[@"action"] isEqual:@"refine"] ? refine(document, request) : render(document, request);
-                if (error) reply(@{ @"id": request[@"id"], @"error": error });
-                else reply(@{ @"id": request[@"id"], @"render_ms": @((CFAbsoluteTimeGetCurrent() - start) * 1000),
-                              @"cache_hits": @(cacheHits - hits), @"cache_misses": @(cacheMisses - misses),
-                              @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes), @"selection_cache_bytes": @(selectionBytes) });
+                if (!composition) {
+                    [outputTargets removeAllObjects];
+                    outputBytes = 0;
+                }
+                NSString *error = composition                              ? compose(document, request)
+                                  : [request[@"action"] isEqual:@"refine"] ? refine(document, request)
+                                                                           : render(document, request);
+                if (error)
+                    reply(@{@"id" : request[@"id"], @"error" : error});
+                else
+                    reply(@{
+                        @"id" : request[@"id"],
+                        @"render_ms" : @((CFAbsoluteTimeGetCurrent() - start) * 1000),
+                        @"cache_hits" : @(cacheHits - hits),
+                        @"cache_misses" : @(cacheMisses - misses),
+                        @"cache_bytes" : @(pixelCacheBytes()),
+                        @"gpu_cache_bytes" : @(gpuCacheBytes()),
+                        @"output_cache_bytes" : @(outputBytes),
+                        @"selection_cache_bytes" : @(selectionBytes)
+                    });
             }
         }
         free(line);

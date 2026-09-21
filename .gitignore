@@ -1,6 +1,7 @@
 *.log
 /.build/
 /.venv/
+/.ruff_cache/
 __pycache__/
 *.pyc
 .DS_Store

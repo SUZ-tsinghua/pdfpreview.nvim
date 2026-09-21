@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check
+        name: Repository format and lint checks
+        entry: make check
+        language: system
+        pass_filenames: false
+        types: [text]

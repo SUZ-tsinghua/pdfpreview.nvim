@@ -466,7 +466,7 @@ function M.new(path, opts, changed)
 			end
 		end
 		table.sort(todo, function(a, b)
-			if not self.prefetch[a.key] ~= not self.prefetch[b.key] then
+			if (not self.prefetch[a.key]) ~= not self.prefetch[b.key] then
 				return not self.prefetch[a.key]
 			end
 			return a.used < b.used

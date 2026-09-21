@@ -1,0 +1,6 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+ObjCBlockIndentWidth: 4
+AllowShortIfStatementsOnASingleLine: WithoutElse
+SortIncludes: Never

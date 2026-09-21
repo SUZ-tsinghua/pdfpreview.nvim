@@ -115,7 +115,7 @@ function M.new(s, config, active, repaint)
 			return self:hide()
 		end
 		local frame, previous = s.frame, self.overlays
-		local available, wanted, retained, changed = {}, {}, {}, false
+		local available, wanted, retained, added = {}, {}, {}, false
 		for _, image in ipairs(previous) do
 			available[image.selection_key] = image
 		end
@@ -127,10 +127,10 @@ function M.new(s, config, active, repaint)
 			if image then
 				retained[image], available[key] = true, nil
 			else
-				changed = true
+				added = true
 			end
 		end
-		if not changed and next(available) == nil then
+		if not added and next(available) == nil then
 			return
 		end
 		-- Extending a range changes only its end lines. Reuse unchanged rectangles
@@ -203,7 +203,7 @@ function M.new(s, config, active, repaint)
 		end
 		self.requested[n] = true
 		local generation = self.generation
-		self.source = self.source or text.new(s.path, config.pdftotext, s.pages, config)
+		self.source = self.source or text.new(s.path, s.pages, config)
 		self.source:get(n, function(page, err)
 			if s.closed or self.generation ~= generation then
 				return

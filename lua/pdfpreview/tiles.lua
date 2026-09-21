@@ -103,9 +103,9 @@ function M.project(source, page, limit, max_columns)
 		return { x = x, y = y, reusable = true, pixel_width = source.pixel_width, pixel_height = source.pixel_height }
 	end
 end
-function M.range(axis, first, finish)
+function M.range(segments, first, finish)
 	local lo, hi
-	for i, t in ipairs(axis) do
+	for i, t in ipairs(segments) do
 		if t.first < finish and t.first + t.size > first then
 			lo = lo or i
 			hi = i

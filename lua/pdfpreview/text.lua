@@ -232,8 +232,8 @@ end
 
 -- Extraction is lazy, serialized and bounded independently of raster work.
 -- The selection owns any pages it needs after they leave this small LRU.
-function M.new(path, executable, geometry, opts)
-	opts = opts or { text_backend = "poppler", pdftotext = executable }
+function M.new(path, geometry, opts)
+	local executable = opts.pdftotext
 	local mode = opts.text_backend or "auto"
 	local native = require("pdfpreview.native")
 	local provider = mode == "pdfkit" or (mode == "auto" and native.available(opts))

@@ -1,180 +1,138 @@
 # pdfpreview.nvim
 
-A PDF reader inside Neovim with continuous scrolling, arbitrary zoom, horizontal panning and text selection. It uses the Kitty graphics protocol for display, a persistent Core Graphics helper on macOS, and Poppler on other systems. No image plugin is required.
+A PDF reader inside Neovim with continuous scrolling, arbitrary zoom, horizontal panning, text selection and translation. It uses Kitty graphics for display, Core Graphics and PDFKit on macOS, and Poppler on other systems. No image plugin is required.
 
-On supported Macs, a Metal compositor moves cached pages at fractional pixel positions. After scrolling or zooming stops, the visible area is redrawn directly from the PDF for sharper text and vector detail. The terminal receives raster images in both cases.
+On supported Macs, a Metal compositor moves cached pages while scrolling or zooming. Once movement stops, the visible area is redrawn directly from the PDF for sharper text and vector detail. Selecting text preserves that resolution.
 
 ## Requirements
 
-- Neovim 0.11+ in a local terminal. The Metal compositor requires Neovim 0.12+.
-- Poppler: `pdfinfo`, `pdftoppm` and `pdftotext` on `PATH` (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu). The macOS helper uses PDFKit for character selection; `pdftotext` supplies word selection on other systems and as a fallback.
-- A terminal supporting Kitty graphics, Unicode image placeholders and local file transmission. Otty on macOS has been tested; Kitty and Ghostty are protocol targets awaiting visual verification.
-- `termguicolors` enabled; `mouse = "a"` for scrolling and text selection.
-- Optional on macOS: Apple's Command Line Tools to build the native helper. Metal composition requires a unified-memory Metal device.
+- Neovim 0.11+ in a local terminal; Metal composition requires 0.12+.
+- Poppler (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu). Rendering requires `pdfinfo` and `pdftoppm`; word selection and the text fallback use `pdftotext`.
+- A terminal supporting Kitty graphics, Unicode image placeholders and local file transmission. Otty on macOS has been tested; Kitty and Ghostty await visual verification.
+- `termguicolors` enabled and `mouse = "a"` for mouse input.
+- Optional on macOS: Apple's Command Line Tools to build the native helper. Metal composition also requires a unified-memory Metal device.
+- Optional for translation: `curl` and internet access. System clipboard copying needs a Neovim clipboard provider; yanking to registers works without one.
 
 SSH, tmux, Zellij and graphical Neovim clients are not supported.
 
 ## Installation
 
-### lazy.nvim / LazyVim
-
-lazy.nvim downloads the plugin into its managed directory and runs the macOS build on installation and updates. No manual clone or fixed checkout location is required. Install the dependencies above first.
-
-In LazyVim, save this as `~/.config/nvim/lua/plugins/pdfpreview.lua`; with plain lazy.nvim, add the inner plugin entry to your existing spec:
+In LazyVim, save this as `~/.config/nvim/lua/plugins/pdfpreview.lua`. With plain lazy.nvim, add the plugin entry to your existing spec:
 
 ```lua
 return {
-  {
-    "SUZ-tsinghua/pdfpreview.nvim",
-    main = "pdfpreview",
-    lazy = false,
-    build = vim.fn.has("mac") == 1 and "make native" or nil,
-    opts = { auto_open = true },
-  },
+	{
+		"SUZ-tsinghua/pdfpreview.nvim",
+		main = "pdfpreview",
+		lazy = false,
+		build = vim.fn.has("mac") == 1 and "make native" or nil,
+		opts = { auto_open = true },
+	},
 }
 ```
 
-Restart Neovim and run `:Lazy install pdfpreview.nvim`. After installation finishes, restart once more and run `:checkhealth pdfpreview`, then `:edit document.pdf`. Future `:Lazy update pdfpreview.nvim` runs also rebuild changed native code. To retry a failed build after installing Apple's Command Line Tools, run `:Lazy build pdfpreview.nvim`.
+Install the dependencies first, restart Neovim and run `:Lazy install pdfpreview.nvim`. After installation finishes, restart and run `:checkhealth pdfpreview`, then `:edit document.pdf`.
 
-The macOS build uses system frameworks and keeps its helper inside the plugin directory. A missing or incompatible helper falls back to Poppler when `rasterizer = "auto"`; explicitly selecting `"native"` reports the error instead. `:PdfStats` in an open reader reports the selected renderer and rasterizer. See the [lazy.nvim spec documentation](https://lazy.folke.io/spec) for build and setup behavior.
+lazy.nvim builds the macOS helper inside its managed plugin directory on installation and updates. To retry a failed build, run `:Lazy build pdfpreview.nvim`. The automatic rasterizer falls back to Poppler if the helper is unavailable or incompatible; explicitly choosing `rasterizer = "native"` reports the error instead.
 
-If Snacks handles PDF files, remove `pdf` from its image formats to avoid competing `BufReadCmd` handlers. [examples/lazyvim.lua](examples/lazyvim.lua) includes that configuration. Alternatively, use `auto_open = false` and open documents explicitly with `:PdfOpen`.
+If Snacks also handles PDFs, remove `pdf` from its image formats to avoid competing handlers. [examples/lazyvim.lua](examples/lazyvim.lua) includes that configuration. Alternatively, set `auto_open = false` and use `:PdfOpen`.
 
-### Local development
-
-An unpublished or development checkout can live anywhere. Replace `"SUZ-tsinghua/pdfpreview.nvim"` in the spec with `dir = "/absolute/path/to/pdfpreview.nvim"`. On macOS, run `make native` in that checkout after changing native code.
+For a development checkout, replace `"SUZ-tsinghua/pdfpreview.nvim"` with `dir = "/absolute/path/to/pdfpreview.nvim"`. Run `make native` in that checkout after changing native code.
 
 ## Usage
 
-```vim
-:PdfOpen /path/to/document.pdf
-:PdfZoom 137.5
-:PdfPage 12
-:PdfCopy
-:PdfTranslate
-:PdfReload
-:PdfStats
-:PdfClose
-```
-
-With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` without an argument uses the current file path. Paths containing spaces can be passed directly without quotes.
+Open a document with `:PdfOpen /path/to/document.pdf`, or `:edit document.pdf` when `auto_open` is enabled. `:PdfOpen` without an argument uses the current file. Paths containing spaces do not need quotes.
 
 | Input | Action |
 | --- | --- |
-| Left click / drag | Select a character / range of PDF text (words with Poppler) |
+| Left click / drag | Select PDF text |
 | Double-click | Select a whole word |
-| `y` / `"ay` | Copy selected text to the unnamed / named register |
-| Ctrl-C / `:PdfCopy` | Copy selected text to the system clipboard |
-| Right click | Open Copy / Translate menu |
-| Escape | Clear text selection |
-| Wheel / trackpad scroll | Scroll across page boundaries |
-| `j` / `k`, Up / Down | Scroll one row; counts supported |
-| `h` / `l`, Left / Right | Pan horizontally; counts supported |
-| Ctrl-D / Ctrl-U, PageDown / PageUp | Scroll most of the viewport |
-| `+` / `=` / `-` | Zoom in / out |
-| Ctrl-wheel | Zoom if the terminal forwards it |
+| `y` / `"ay` | Copy to the unnamed / named register |
+| Ctrl-C / `:PdfCopy` | Copy to the system clipboard |
+| Right click / `:PdfTranslate` | Open Copy / Translate menu / translate the selection |
+| Escape | Clear selection |
+| Wheel, `j` / `k` | Scroll across page boundaries |
+| `h` / `l` | Pan horizontally |
+| `+` / `-`, `:PdfZoom 137.5` | Zoom relative to fit width |
 | `0` | Fit the widest page to the window |
-| `gg` / `G` | Start / end of document |
 | `12G` / `:PdfPage 12` | Go to page 12 |
-| `R` | Reload from disk |
-| `q` | Close the PDF buffer |
+| `R` / `:PdfReload` | Reload from disk |
+| `q` / `:PdfClose` | Close the PDF buffer |
 
-Zoom is relative to fit width: 100% fits the widest page, and the default range is 10%–800%. Zoom and resize preserve the approximate reading position at the viewport center.
+The macOS helper selects individual characters through PDFKit; Poppler selects whole words. Text extraction is local and requires an existing text layer, with no OCR. Mouse positions use terminal cells, so zooming in helps select small letters. Hold the mouse button and scroll to extend across pages. See `:help pdfpreview-selection` and `:help pdfpreview-mappings` for details.
 
-Drag across text, then press `y` to yank or Ctrl-C to copy. On macOS with the native helper built, selection follows individual characters; double-click to select a whole word. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. The surface renderer includes the highlight in the PDF pixels, including during refinement and sidebar resizing. Other renderers temporarily hide highlights when a popup overlaps the PDF, while retaining the selection.
-
-Right-click selected text to **copy** or **translate** it. Translation appears in a Neovim floating window; click outside, press `q` or Escape to dismiss the menu or result without closing the PDF. Without an existing selection, right-clicking a word selects it first. `:PdfTranslate` translates the current selection too.
-
-Translation defaults to English → Simplified Chinese through Google's free web endpoint, with MyMemory as a fallback for short selections (up to 500 UTF-8 bytes). It needs `curl` and internet access, with no account or API key. Only choosing Translate sends the selected text to these services. Free services can impose quotas or change their endpoints; failures appear in the float. Repeated results are cached in memory (32 entries). Disable automatic fallback with `translation = { fallback = false }`, or select MyMemory directly with `translation = { provider = "mymemory" }`.
-
-Text is extracted locally from the PDF's text layer on demand. `text_backend = "auto"` uses PDFKit character ranges on macOS when the helper is built, falling back to Poppler word bounds if unavailable. This choice is independent of the rasterizer. Force either with `"pdfkit"` or `"poppler"`; rebuild existing macOS helpers with `make native`. `:PdfStats` reports the active text backend and any fallback reason. Mouse positions still arrive in terminal cells, so zooming in helps select small letters. Combining marks and emoji stay together when copied. Extracted spaces, line breaks and reading order are preserved; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
-
-True pinch-to-zoom is not supported. The plugin receives discrete wheel events; the surface renderer interpolates their movement over 40 ms by default.
+Translation appears in a Neovim float. Click outside, press `q` or Escape to close the menu or result. The default is English → Simplified Chinese through Google's free web endpoint, with MyMemory as a fallback for short selections. No account or API key is needed. Choosing Translate sends the selected text to the service; selecting and copying remain local. See `:help pdfpreview-translation` for limits and options.
 
 ## Configuration
 
-Common options, shown with their defaults:
+A few defaults:
 
 ```lua
 require("pdfpreview").setup({
-  auto_open = false,
-  renderer = "auto",       -- auto, surface, viewport, unicode
-  rasterizer = "auto",     -- auto, native, poppler
-  text_backend = "auto",   -- auto, pdfkit (characters), poppler (words)
-  translation = { source = "en", target = "zh-CN", provider = "google", fallback = true, timeout = 10 },
-  scroll_step = 1,          -- Rows per wheel event
-  scroll_animation_ms = 40, -- Surface interpolation; 0 disables it
-  surface_refine_ms = 100,  -- Idle detail redraw; 0 disables it
-  surface_refine_scale = 2, -- Idle pixel density multiplier (1–2)
-  zoom_step = 1.15,
-  min_zoom = 0.1,
-  max_zoom = 8,
-  max_dimension = 4096,    -- Cached page edge limit in pixels
-  cell_width = nil,       -- Automatic; a positive number overrides detection
-  cell_height = nil,      -- Automatic; fractional overrides are supported
+	auto_open = false,
+	renderer = "auto", -- auto, surface, viewport, unicode
+	rasterizer = "auto", -- auto, native, poppler
+	text_backend = "auto", -- auto, pdfkit (characters), poppler (words)
+	scroll_animation_ms = 40, -- 0 disables interpolation
+	surface_refine_ms = 100, -- 0 disables the idle detail redraw
+	surface_refine_scale = 2, -- Idle pixel density multiplier (1–2)
 })
 ```
 
-See `:help pdfpreview-options` for all options.
+The complete reference is in [doc/pdfpreview.txt](doc/pdfpreview.txt), available as `:help pdfpreview`:
 
-### Cell size detection and calibration
+- `pdfpreview-options`: all defaults, renderer selection and resource controls.
+- `pdfpreview-translation`: language, provider, fallback and timeout settings.
+- `pdfpreview-cell-size`: automatic detection and manual calibration when proportions look wrong.
+- `pdfpreview-rendering`: rendering paths, refinement, cache limits and fallback behavior.
 
-The plugin automatically reads the terminal's reported pixel and grid dimensions and adjusts PDF layout to match. It rechecks on resize, UI attachment, focus gain and drawing, preserving the approximate reading position when dimensions change. Detection uses a lightweight system call with no background polling. If pixel dimensions are unavailable, it falls back to 9×18 pixels. `:checkhealth pdfpreview` shows detected and effective dimensions; `:PdfStats` shows the dimensions used by the current reader and whether each axis comes from `ioctl`, `manual` or `fallback`.
+Use `:checkhealth pdfpreview` for dependencies and terminal dimensions, and `:PdfStats` for the active renderer, rasterizer, text backend and cache usage. Timing statistics stop at frame submission; they do not measure screen latency.
 
-**Automatic detection only has integer pixel reports to work with.** In Otty, these can already reflect rounded cell dimensions. Dividing total pixels by columns/rows may produce a fractional average, but cannot recover precision lost by the terminal. Automatic correction therefore cannot guarantee an exact aspect ratio; accurate calibration may still require manual `cell_width` / `cell_height` values.
-
-If a known square looks too wide, keep the current height and set `cell_width = current_width × displayed_square_width / displayed_square_height`. For example, a reported width of 15 and a square measuring 520×500 on screen suggest `cell_width = 15.6`. This is an example, not a universal Otty setting. Add the override to your plugin options and restart Neovim. Either axis can be overridden independently with a positive fractional value in physical pixels; manual values always take priority. Recalibrate after changing font, font size or display scaling, or remove the overrides to restore automatic detection. See `:help pdfpreview-cell-size`.
-
-## Rendering and resource use
-
-`renderer = "auto"` selects the Metal `surface` renderer in Otty when supported, otherwise `viewport` tiles. Other terminals use whole-page `unicode` placements. `renderer = "viewport"` can explicitly select the tile path.
-
-Surface motion reuses cached page pixels and two output buffers. Terminal read acknowledgments prevent overwriting files still being read. Once motion settles, a separate worker redraws visible PDF text and paths at up to twice the terminal pixel density on each axis. The terminal fits this source into the same cell grid. Refinement is capped at 16,777,216 pixels and 8192 pixels per dimension, so large windows use a smaller multiplier. Scrolling, zooming and resizing cancel obsolete refinement work. Selection-only updates reuse the clean refined viewport at its original resolution, so dragging and clearing highlights preserve sharpness. Embedded bitmap images remain limited by their original resolution. `max_dimension` limits cached page pixels, not this direct PDF redraw.
-
-The native source cache is capped at 128 MiB and reusable Metal output mappings at 64 MiB. Surface output files hold at most three viewports, capped at 128 MiB including refinement. One clean refined viewport is also retained in the refinement worker, capped at 64 MiB, for selection updates. These are cache/file limits, not total process-memory limits. Hiding a reader removes terminal images and stops refinement; closing terminates its workers and removes temporary files.
-
-Setting `surface_refine_scale = 1` keeps direct PDF redraws at the terminal's native pixel density, reducing idle CPU, memory and transfer costs. `surface_refine_ms = 0` disables idle redraws at the cost of fine detail at high zoom. `scroll_animation_ms = 0` reduces intermediate frames. Tile rendering reuses source tiles across scrolling and nearby zoom levels; `prefetch_zoom = false` reduces speculative work. Its page/image cache limits are soft because visible and in-flight images must remain available.
-
-Oversized viewports, compositor errors or missing terminal acknowledgments fall back to tiles. `:PdfStats` reports the active path, fallback reason, cache usage, detected/effective cell dimensions and effective refinement scale. Its input-to-frame timing ends at submission and does not measure screen latency.
-
-## Limitations
-
-- One viewport per document buffer; multiple splits do not have independent positions.
-- Character selection requires the macOS PDFKit helper; Poppler selection is word-based. No OCR.
-- No PDF search, links, annotations, outline or SyncTeX.
-- No password-protected documents.
-- Tile and Unicode paths can look softer at high zoom because their raster size is capped.
-- Terminal compatibility and physical input still require manual visual checks.
+There is one viewport per document buffer. OCR, PDF search, links, annotations, outlines, SyncTeX, password-protected documents and true pinch-to-zoom are not supported. Terminal compatibility and physical input still need visual checks.
 
 ## Development
 
-Keep the small regression suite in version control. It uses a synthetic PDF and temporary files, without access to a running user session.
+Formatting and linting use StyLua and Luacheck for Lua, Ruff for Python, and clang-format for Objective-C. The native build also enables `-Wall -Wextra -Werror`. Install Luacheck (`brew install luacheck` or `sudo apt install lua-check`) and the pinned tools with Python 3.10+:
 
 ```sh
-# Neovim, Poppler and Python 3; no Python packages needed
-make test
-
-# macOS native checks, including pixel comparisons
 python3 -m venv .venv
-.venv/bin/python -m pip install -r tests/requirements.txt
-make test-native PYTHON=.venv/bin/python
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+make format
+make check
+
+# Optional: run the same quick checks before each commit.
+pre-commit install
 ```
 
-`NVIM=/path/to/nvim` selects a different Neovim executable. Native checks build the helper first. Metal-specific checks report a skip when the device or required Neovim API is unavailable; Core Graphics raster/refinement checks still run.
+The hook uses `make check`, so the development tools must be on `PATH` when committing. CI runs the same check. Formatting is explicit; checks report changes without rewriting files.
 
-| Suite | Essential coverage |
+Tests use synthetic PDFs, isolated Neovim processes and temporary files. They do not access a running user session or call translation services.
+
+```sh
+# Neovim, Poppler and Python 3.9+; no Python packages needed.
+make test
+
+# macOS native checks, including PDFKit, Metal and pixel comparisons.
+python -m pip install -r tests/requirements.txt
+make test-native PYTHON=python
+```
+
+`NVIM=/path/to/nvim` selects a Neovim executable; `PYTHON=/path/to/python` selects Python. Native checks build the helper first. Metal checks report a skip if the device or Neovim API is unavailable; Core Graphics and PDFKit checks still run. Full tests stay separate from the commit hook.
+
+| Suite | Coverage |
 | --- | --- |
 | `core.lua` | Cell detection, layout, tile coverage, image IDs and output recovery |
-| `reader.lua` | Poppler readers, page boundaries, zoom, dimension changes and cleanup |
-| `surface.lua` | Acknowledgments, cancellation, stale results and bounded file lifetimes |
-| `selection.lua` | Text extraction, drag/yank and context-menu mouse events, cross-page copying, popup dismissal and cleanup |
-| `pdfkit.lua` | Native character extraction, partial-word copying, word expansion, fallback and cancellation |
-| `translate.lua` | Translation parsing, stdin transport, bounded cache, fallback, errors and cancellation |
-| `native.lua` | Actual native workers, idle refinement, protocol validation and fallback |
+| `reader.lua` | Poppler readers, scrolling, zoom, dimension changes and cleanup |
+| `surface.lua` | Acknowledgments, cancellation, stale results and file lifetimes |
+| `selection.lua` | Poppler extraction, selection geometry, mouse/yank mappings, clipboard and context menus |
+| `pdfkit.lua` | Character extraction, partial-word copying, word expansion and text fallback |
+| `translate.lua` | Response parsing, stdin transport, caching, fallback, errors and cancellation |
+| `native.lua` | Native workers, refinement, protocol validation and rendering fallback |
 | `ui.lua` | Embedded Neovim image transport, nested waits and stable grids |
-| `pixels.py` | Rotation/cropping, Metal pixels, cache eviction and vector detail |
+| `pixels.py` | Character bounds, rotation/cropping, selection pixels, cache eviction and vector detail |
 
-GitHub Actions runs the portable suite on Linux and native checks on macOS. Pixel dependencies are only needed for development. Build products, logs and local benchmark output are ignored.
+GitHub Actions runs portable tests on Linux with Neovim 0.11 and stable, and native tests on macOS. Development tools and pixel-test packages are not runtime dependencies.
 
 ## License
 

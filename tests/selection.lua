@@ -3,6 +3,8 @@ vim.o.termguicolors = true
 vim.o.mouse = "a"
 vim.o.lines, vim.o.columns = 40, 100
 local api = vim.api
+local helpers = dofile("tests/helpers.lua")
+local wait = helpers.wait
 local text = require("pdfpreview.text")
 local selection = require("pdfpreview.selection")
 local graphics = require("pdfpreview.graphics")
@@ -13,15 +15,7 @@ vim.notify = function(value)
 end
 graphics.sink = function(data)
 	packets[#packets + 1] = data
-	if data:find("a=T", 1, true) and data:find("q=0", 1, true) then
-		local id = assert(tonumber(data:match("i=(%d+)")))
-		vim.schedule(function()
-			api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. id .. ";OK" } })
-		end)
-	end
-end
-local function wait(predicate, label)
-	assert(vim.wait(15000, predicate, 2), label)
+	helpers.acknowledge(data)
 end
 local function xml(words)
 	return '<page width="400" height="600"><flow><block><line xMin="0">' .. words .. "</line></block></flow></page>"
@@ -78,7 +72,9 @@ end
 
 local file = vim.fn.tempname() .. " space ; $ literal.pdf"
 assert(vim.uv.fs_copyfile(vim.fn.getcwd() .. "/tests/sample.pdf", file))
-local loader = text.new(file, "pdftotext", { { width = 400, height = 600 } })
+local text_options = { text_backend = "poppler", pdftotext = "pdftotext" }
+local geometry = { { width = 400, height = 600 } }
+local loader = text.new(file, geometry, text_options)
 local loaded, callbacks = nil, 0
 for _ = 1, 2 do
 	loader:get(1, function(page, err)
@@ -93,7 +89,7 @@ assert(
 	"Extract original text with shell-special paths"
 )
 loader:close()
-local closing = text.new(file, "pdftotext", { { width = 400, height = 600 } })
+local closing = text.new(file, geometry, text_options)
 local closed_from_callback = false
 closing:get(1, function(page, err)
 	assert(page, err)
@@ -106,7 +102,7 @@ end)
 wait(function()
 	return closed_from_callback
 end, "Closing during result delivery suppresses remaining callbacks")
-local failed = text.new(file, "/nonexistent/pdfpreview-pdftotext", {})
+local failed = text.new(file, {}, { text_backend = "poppler", pdftotext = "/nonexistent/pdfpreview-pdftotext" })
 local failure
 failed:get(1, function(page, err)
 	assert(not page)
@@ -116,7 +112,7 @@ wait(function()
 	return failure ~= nil
 end, "Unavailable extractors report a recoverable error")
 failed:close()
-local cancelled = text.new(file, "pdftotext", { { width = 400, height = 600 } })
+local cancelled = text.new(file, geometry, text_options)
 cancelled:get(1, function()
 	error("Closed extraction called its consumer")
 end)
@@ -148,7 +144,7 @@ vim.g.clipboard = {
 	},
 }
 local renderers = { "unicode", "viewport" }
-if require("pdfpreview.native").available(viewer.config) then
+if vim.env.PDFPREVIEW_TEST_NATIVE == "1" then
 	renderers[#renderers + 1] = "surface"
 end
 for _, renderer in ipairs(renderers) do
@@ -230,7 +226,7 @@ for _, renderer in ipairs(renderers) do
 		"Movement within a selected word does not retransmit highlights"
 	)
 	if s.renderer == "surface" then
-		assert(s.frame.refined and s.frame.refinement_scale == 2, "Select on main's 2x refined surface")
+		assert(s.frame.refined and s.frame.refinement_scale == 2, "Selection starts on a 2x refined surface")
 		assert(
 			s.surface_state.sequence == initial_compositions and s.surface_state.displayed_request.reuse,
 			"Real native selection updates reuse sharp pixels without any lower-resolution composition"
@@ -410,49 +406,9 @@ for _, renderer in ipairs(renderers) do
 end
 vim.fn.delete(file)
 
--- A child event loop processes genuine Neovim mouse input and buffer mappings.
-local channel = vim.fn.jobstart({ vim.v.progpath, "--embed", "--headless", "-u", "NONE", "-i", "NONE" }, { rpc = true })
-assert(channel > 0)
-local function request(method, ...)
-	return vim.rpcrequest(channel, method, ...)
-end
-local ok, err = pcall(function()
-	request(
-		"nvim_exec_lua",
-		[[
-		vim.opt.rtp:prepend(...)
-		vim.o.mouse = 'a'
-		vim.o.termguicolors = true
-		vim.o.lines, vim.o.columns = 40, 100
-		require('pdfpreview.graphics').sink = function() end
-		viewer = require('pdfpreview')
-	]],
-		{ vim.fn.getcwd() }
-	)
+helpers.with_child(function(request)
 	for _, renderer in ipairs({ "unicode", "viewport" }) do
-		local positions = request(
-			"nvim_exec_lua",
-			[[
-			local root, renderer = ...
-			viewer.setup({renderer=renderer, rasterizer='poppler', text_backend='poppler', cell_width=10, cell_height=20})
-			s = assert(viewer.open(root .. '/tests/sample.pdf'))
-			assert(vim.wait(15000, function() return s.frame and not s.pending end, 2))
-			s.selection:load(1)
-			assert(vim.wait(15000, function() return s.selection.pages[1] ~= nil end, 2))
-			vim.cmd.redraw()
-			local origin = vim.fn.screenpos(s.win, vim.fn.line('w0', s.win), 1)
-			local page, positions = s.frame.layout.pages[1], {}
-			for i=1,2 do
-				local w = s.selection.pages[1].words[i]
-				positions[i] = {
-					origin.row - 1 + math.floor(page.top - s.frame.y + (w.y1 + w.y2) * page.height / 2),
-					origin.col - 1 + math.floor(require('pdfpreview.text').left(s.frame, page) + (w.x1 + w.x2) * page.width / 2),
-				}
-			end
-			return positions
-		]],
-			{ vim.fn.getcwd(), renderer }
-		)
+		local positions = helpers.mouse_reader(request, { renderer = renderer, text_backend = "poppler" }, { 1, 2 })
 		request("nvim_input_mouse", "left", "press", "", 0, positions[1][1], positions[1][2])
 		wait(function()
 			return request("nvim_exec_lua", "return s.selection.start ~= nil", {})
@@ -569,8 +525,6 @@ local ok, err = pcall(function()
 		request("nvim_exec_lua", "viewer.close(); vim.fn.setreg('b', '')", {})
 	end
 end)
-vim.fn.jobstop(channel)
-assert(ok, err)
 print(
 	"PASS: PDF text parsing, Unicode, extraction, mouse/yank mappings, clipboard, font changes, refined surfaces, overlay reuse and cleanup"
 )

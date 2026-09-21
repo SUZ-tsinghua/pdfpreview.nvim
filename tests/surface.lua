@@ -212,7 +212,6 @@ do
 	acknowledge(id, "ERROR")
 	assert(fallback and not s.surface_state.awaiting, "A failed transfer exits the surface path")
 	surface.hide(s)
-	fallback = nil
 	s.y = s.y + 1
 	paint()
 	local hidden = finish()

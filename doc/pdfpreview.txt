@@ -1,16 +1,18 @@
 *pdfpreview.txt*  Continuous PDF reading in Neovim
 
-INTRODUCTION                                             *pdfpreview*
+INTRODUCTION                                                      *pdfpreview*
 
 pdfpreview.nvim displays local PDFs inside Neovim using Kitty graphics.
-It requires Neovim 0.11+, Poppler (pdfinfo, pdftoppm and pdftotext), termguicolors,
-and a terminal supporting Unicode image placeholders and local files.
+It requires Neovim 0.11+, Poppler (pdfinfo and pdftoppm), termguicolors, and a
+terminal supporting Unicode image placeholders and local files. Poppler word
+selection also needs pdftotext; native character selection uses PDFKit.
 Use :set mouse=a for scrolling and selection. SSH and multiplexers are not
 supported.
 
-On macOS, run `make native` in the plugin directory to build the Core Graphics
-helper. Rebuild after updating native source. The automatic rasterizer falls
-back to Poppler if the helper is unavailable, incompatible or fails.
+On macOS, run `make native` in the plugin directory to build the helper for
+Core Graphics, Metal and PDFKit. Rebuild after updating native source. The
+automatic rasterizer falls back to Poppler if the helper is unavailable,
+incompatible or fails.
 
 COMMANDS                                                 *pdfpreview-commands*
 
@@ -23,19 +25,19 @@ COMMANDS                                                 *pdfpreview-commands*
         window. Decimal percentages are accepted. Default range: 10-800.
 :PdfPage {number}                                         *:PdfPage*
         Jump to the given page (starting at 1).
-:PdfCopy                                                  *:PdfCopy*
+:PdfCopy                                                 *:PdfCopy*
         Copy selected PDF text to the system clipboard (+ register).
-        If no clipboard provider is available, keep it in the unnamed register.
+        Without a clipboard provider, keep it in the unnamed register.
 :PdfTranslate                                            *:PdfTranslate*
         Translate selected PDF text in a floating window.
         See |pdfpreview-translation|.
 :PdfReload                                               *:PdfReload*
         Reload the current document from disk.
 :PdfStats                                                *:PdfStats*
-        Report render paths, target/displayed zoom, cache usage, active work,
-        refinement state, cell dimensions and fallback reasons. Input timing
-        ends at frame submission; it excludes terminal transfer and physical
-        display delay.
+        Report render and text backends, target/displayed zoom, cache usage,
+        active work, refinement state, cell dimensions and fallback reasons.
+        Input timing ends at frame submission; it excludes terminal transfer
+        and physical display delay.
 :PdfClose                                                *:PdfClose*
         Close the reader and release its workers and temporary files.
 
@@ -43,10 +45,10 @@ Run :checkhealth pdfpreview to check dependencies and terminal identification.
 
 MAPPINGS                                                 *pdfpreview-mappings*
 
-Left click/drag   Select characters or a range of PDF text (words with Poppler).
+Left click/drag    Select characters or a range of text (words with Poppler).
 Double-click      Select a whole word.
 y / "ay           Copy selected text to the unnamed / named register.
-Ctrl-C / Cmd-C    Copy to the system clipboard (when forwarded by the terminal).
+Ctrl-C / Cmd-C     Copy to the clipboard (when forwarded by the terminal).
 Right click       Open Copy / Translate menu.
 Escape            Clear text selection.
 j/k, Up/Down       Scroll one row; counts supported.
@@ -62,7 +64,7 @@ q                 Close.
 Wheel events scroll continuously across page boundaries. Ctrl-wheel zooms
 when forwarded by the terminal. True pinch-to-zoom is not supported.
 
-TEXT SELECTION                                           *pdfpreview-selection*
+TEXT SELECTION                                          *pdfpreview-selection*
 
 Drag across text, then press y to yank or Ctrl-C to copy. Double-click selects
 a whole word. Hold the button and scroll to extend across pages. Selection
@@ -77,25 +79,27 @@ helper built, PDFKit supplies character ranges and bounds. Combining marks
 and emoji remain together. Terminal mouse positions still use cells; zoom in
 to select small letters more precisely. Copying waits for pending extraction.
 No OCR is performed: scanned pages without a text layer cannot be selected.
-Extracted spaces, line breaks and reading order are retained; complex columns
-or encodings may affect that order.
+PDFKit preserves extracted spaces and line breaks; Poppler reconstructs them
+from word and line bounds. Both follow the extractor's reading order, which
+can be affected by complex columns or unusual encodings.
 
 text_backend = "auto" prefers PDFKit, falling back to Poppler word selection
-if unavailable. Rebuild older helpers with make native. "pdfkit" requires the
-macOS helper; "poppler" always uses pdftotext. :PdfStats reports the active
-text backend and any fallback reason. Without either extractor, selection is
-unavailable but rendering still works.
+if the helper is unavailable or extraction fails. Rebuild older helpers with
+make native. "pdfkit" requires the macOS helper and reports extraction errors;
+"poppler" always uses pdftotext. :PdfStats reports the active text backend and
+any fallback reason. Without either extractor, selection is unavailable but
+rendering still works.
 
 Lua API: require("pdfpreview").copy(register) copies the current selection;
 the default register is "+". A ready selection returns the copied string,
 otherwise copying completes asynchronously. clear_selection() removes it.
 
-TRANSLATION                                              *pdfpreview-translation*
+TRANSLATION                                           *pdfpreview-translation*
 
 Right-click selected text and choose Translate, or use :PdfTranslate. Without
 an existing selection, right-clicking a word selects it first. Click outside,
-press q or Escape to close the menu/result without closing the PDF. Translation
-runs asynchronously; closing the float cancels pending work.
+press q or Escape to close the menu/result without closing the PDF.
+Translation runs asynchronously; closing the float cancels pending work.
 
 The default translates English to Simplified Chinese using Google's free web
 endpoint and falls back to MyMemory for short selections (up to 500 UTF-8
@@ -108,49 +112,52 @@ memory. Selections above 5000 bytes are rejected without truncation.
 Options (within setup's translation table):
 >
     translation = {
-      provider = "google", -- or "mymemory"
-      source = "en",
-      target = "zh-CN",
-      fallback = true,     -- MyMemory after a Google failure
-      timeout = 10,        -- seconds per service, 1-60
+        provider = "google", -- or "mymemory"
+        source = "en",
+        target = "zh-CN",
+        fallback = true,     -- MyMemory after a Google failure
+        timeout = 10,        -- seconds per service, 1-60
     }
 <
 source="auto" works with Google but disables MyMemory fallback, since MyMemory
-requires an explicit source language. Lua API: require("pdfpreview").translate().
+requires an explicit source language. Set fallback=false to use only Google,
+or provider="mymemory" to use MyMemory directly (the 500-byte limit applies).
+Lua API: require("pdfpreview").translate().
 
-OPTIONS                                                  *pdfpreview-options*
+OPTIONS                                                   *pdfpreview-options*
 
 Call require("pdfpreview").setup({ ... }) once during initialization.
 Defaults are shown below. Zoom values are factors, not percentages.
+For the translation table's defaults, see |pdfpreview-translation|.
 
-auto_open = false          Register a PDF BufReadCmd handler.
-renderer = "auto"          "auto", "surface", "viewport" or "unicode".
-rasterizer = "auto"        "auto", "native" (macOS) or "poppler".
-native_renderer = nil      Optional absolute path to the compiled helper.
-pdfinfo = "pdfinfo"        Poppler metadata executable.
-pdftoppm = "pdftoppm"      Poppler rendering executable.
-pdftotext = "pdftotext"    Poppler text extraction executable.
-text_backend = "auto"     "auto", "pdfkit" (macOS characters), "poppler" (words).
-scroll_step = 1            Rows per wheel event.
-scroll_animation_ms = 40   Surface movement interpolation (0-200 ms).
-surface_refine_ms = 100    Idle detail redraw delay (0-2000 ms).
-surface_refine_scale = 2   Idle pixel density multiplier (1-2).
-zoom_step = 1.15           Relative zoom multiplier for +/- and Ctrl-wheel.
-min_zoom = 0.1             Minimum zoom relative to fit width.
-max_zoom = 8               Maximum zoom relative to fit width.
-page_gap = 2               Gap between pages in terminal rows.
-max_dimension = 4096       Cached page edge limit in pixels.
-cell_width = nil           Automatic width; a positive number overrides it.
-cell_height = nil          Automatic height; a positive number overrides it.
+auto_open = false         Register a PDF BufReadCmd handler.
+renderer = "auto"         "auto", "surface", "viewport" or "unicode".
+rasterizer = "auto"       "auto", "native" (macOS) or "poppler".
+native_renderer = nil     Optional absolute path to the compiled helper.
+pdfinfo = "pdfinfo"       Poppler metadata executable.
+pdftoppm = "pdftoppm"     Poppler rendering executable.
+pdftotext = "pdftotext"   Poppler text extraction executable.
+text_backend = "auto"     "auto", "pdfkit" (characters), "poppler" (words).
+scroll_step = 1           Rows per wheel event.
+scroll_animation_ms = 40  Surface movement interpolation (0-200 ms).
+surface_refine_ms = 100   Idle redraw delay (0 disables, up to 2000 ms).
+surface_refine_scale = 2  Idle pixel density multiplier (1-2).
+zoom_step = 1.15          Relative zoom multiplier for +/- and Ctrl-wheel.
+min_zoom = 0.1            Minimum zoom relative to fit width.
+max_zoom = 8              Maximum zoom relative to fit width.
+page_gap = 2              Gap between pages in terminal rows.
+max_dimension = 4096      Cached page edge limit in pixels.
+cell_width = nil          Automatic width; a positive number overrides it.
+cell_height = nil         Automatic height; a positive number overrides it.
 
 The following options apply to tile/Unicode rendering:
 
-cache_pages = 8            Soft limit on cached page/tile renders.
+cache_pages = 8           Soft limit on cached page/tile renders.
 image_cache_bytes = 16777216
                           Soft budget for terminal images (16 MiB).
 jobs = 2                  Maximum concurrent raster jobs.
-prefetch_zoom = true       Predict source tiles for the next zoom level.
-progressive_zoom = true    Reproject complete cached coverage during zoom.
+prefetch_zoom = true      Predict source tiles for the next zoom level.
+progressive_zoom = true   Reproject complete cached coverage during zoom.
 compact_placeholders = false
                           Experimental compact coordinate encoding. Leave
                           false for reliable clipping; floats force false.
@@ -211,7 +218,7 @@ The effective multiplier decreases to stay within 16,777,216 output pixels
 and 8192 pixels per dimension. PdfStats reports refinement_scale, cell_width
 and cell_height. max_dimension limits cached pages, not direct PDF redraws.
 New motion cancels outdated refinement work. Dragging and clearing selections
-reuse the clean final-resolution viewport without downgrading to motion pixels.
+reuse the clean viewport at its final resolution.
 The terminal receives raster images; embedded bitmaps retain their source
 detail limits.
 Discrete wheel input is interpolated; native fractional input is not received.
@@ -232,8 +239,10 @@ soft cache limits. Large zoom levels can be softer because raster sizes are
 capped. Zoom and resize preserve the approximate viewport-center position.
 
 Hiding a reader releases terminal images and stops refinement; closing stops
-all workers and removes temporary files after they exit. PDFs remain local.
-PDF buffers disable Snacks scroll animation to keep image rows aligned.
+all workers and removes temporary files after they exit. Rendering and text
+extraction are local; translation sends selected text as described in
+|pdfpreview-translation|. PDF buffers disable Snacks scroll animation to keep
+image rows aligned.
 
 Only one viewport is maintained per document buffer. OCR, search, links,
 annotations, outlines, SyncTeX and passwords are not supported.

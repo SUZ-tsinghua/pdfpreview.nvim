@@ -22,7 +22,7 @@ M.defaults = {
 	pdftoppm = "pdftoppm",
 	pdftotext = "pdftotext",
 	text_backend = "auto", -- PDFKit characters on macOS; Poppler words otherwise.
-	translation = { provider = "google", source = "en", target = "zh-CN", timeout = 10, fallback = true },
+	translation = vim.deepcopy(require("pdfpreview.translate").defaults),
 	scroll_step = 1,
 	scroll_animation_ms = 40,
 	surface_refine_ms = 100,
@@ -347,10 +347,10 @@ local function status(s, waiting)
 end
 
 local function frame_ready(s, entries, preview)
-	local surface = table.concat({ s.win, s.width, s.height, s.cw, s.ch, s.columns }, ":")
+	local surface_key = table.concat({ s.win, s.width, s.height, s.cw, s.ch, s.columns }, ":")
 	local key = table.concat({ s.geometry_key, s.x, s.y, s.compact and "compact" or "explicit" }, ":")
 	-- Holding an old zoom is safe only while the drawable window stays the same.
-	if s.frame and s.frame.surface ~= surface then
+	if s.frame and s.frame.surface ~= surface_key then
 		s.frame = nil
 		s.backend:set_retained({})
 	end
@@ -361,8 +361,8 @@ local function frame_ready(s, entries, preview)
 	end
 	if not waiting then
 		local protected = vim.tbl_extend("force", keys, s.backend.retained)
-		for key in pairs(preview and preview.entries or {}) do
-			protected[key] = true
+		for entry_key in pairs(preview and preview.entries or {}) do
+			protected[entry_key] = true
 		end
 		local ready, delay = s.backend:reserve_images(protected)
 		if ready then
@@ -393,9 +393,9 @@ local function frame_ready(s, entries, preview)
 			keys[entry_key] = true
 		end
 	elseif waiting then
-		if not s.frame and s.loading_surface ~= surface then
+		if not s.frame and s.loading_surface ~= surface_key then
 			write(s, { "Rendering PDF…" })
-			s.loading_surface = surface
+			s.loading_surface = surface_key
 		end
 		s.backend:pump()
 		return
@@ -418,7 +418,7 @@ local function frame_ready(s, entries, preview)
 		height = s.height,
 		cw = s.cw,
 		ch = s.ch,
-		surface = surface,
+		surface = surface_key,
 		keys = keys,
 		zoom = s.zoom,
 		x = s.x,
@@ -509,7 +509,7 @@ local function paint_viewport(s)
 		end
 		return grids[p]
 	end
-	local function fragment(e, x, y, bounds)
+	local function make_fragment(e, x, y, bounds)
 		local left, top = math.max(bounds.left, x.first), math.max(bounds.top, y.first)
 		return {
 			entry = e,
@@ -537,7 +537,7 @@ local function paint_viewport(s)
 			return
 		end
 		entries[e.key] = e
-		fragments[#fragments + 1] = fragment(e, x, y, bounds)
+		fragments[#fragments + 1] = make_fragment(e, x, y, bounds)
 	end
 	local function horizontal(n, document, position)
 		document = document or s.layout
@@ -673,7 +673,7 @@ local function paint_viewport(s)
 						end
 						preview.entries[e.key] = e
 						preview.sizes[e.key] = { width = x.size, height = y.size }
-						preview.fragments[#preview.fragments + 1] = fragment(e, x, y, bounds)
+						preview.fragments[#preview.fragments + 1] = make_fragment(e, x, y, bounds)
 					end
 				end
 			end

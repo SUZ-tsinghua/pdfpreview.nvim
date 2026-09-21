@@ -1,4 +1,5 @@
 local M = {}
+M.defaults = { provider = "google", source = "en", target = "zh-CN", timeout = 10, fallback = true }
 local cache, order = {}, {}
 
 local function google_result(data)
@@ -15,13 +16,7 @@ local function google_result(data)
 end
 
 function M.request(value, options, callback)
-	local opts = vim.tbl_extend("force", {
-		provider = "google",
-		source = "en",
-		target = "zh-CN",
-		timeout = 10,
-		fallback = true,
-	}, options or {})
+	local opts = vim.tbl_extend("force", M.defaults, options or {})
 	local job = {}
 	job.kill = function()
 		job.cancelled = true

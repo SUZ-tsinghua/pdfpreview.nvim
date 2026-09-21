@@ -364,7 +364,8 @@ function M.upload(file, cols, rows, renderer, raster)
 	if viewport then
 		assert(cols > 0 and cols <= limit and rows > 0 and rows <= limit, "Viewport exceeds coordinate range")
 	end
-	local width, height, format = nil, nil, raster and raster.format or 100
+	local width, height
+	local format = raster and raster.format or 100
 	if format == 32 then
 		width, height = raster.crop.width, raster.crop.height
 		local stat = uv.fs_stat(file)
@@ -504,10 +505,6 @@ function M.resize_many(resizes)
 		image.cols, image.rows = item.width, item.height
 		image.tiles[1].width, image.tiles[1].height = item.width, item.height
 	end
-end
-
-function M.resize(image, cols, rows)
-	return M.resize_many({ { image = image, width = cols, height = rows } })
 end
 
 -- Translucent screen placements work without Kitty relative-placement support.

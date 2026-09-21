@@ -8,46 +8,34 @@ do
 	vim.o.columns = 90
 	local layout = require("pdfpreview.layout")
 	local backend = require("pdfpreview.backend")
-	local gfx = require("pdfpreview.graphics")
 	local viewer = require("pdfpreview")
-	local packets = {}
-	gfx.sink = function(data)
-		packets[#packets + 1] = data
-	end
-	local assertions = 0
-	local function check(value, label)
-		assertions = assertions + 1
-		assert(value, label)
-	end
-	local function wait(fn, label)
-		check(vim.wait(15000, fn, 20), label)
-	end
+	require("pdfpreview.graphics").sink = function() end
 	local pages = { { width = 400, height = 600 }, { width = 500, height = 350 }, { width = 300, height = 700 } }
 	local l = layout.build(pages, 90, 10, 20, 1, 2)
-	check(l.pages[2].top == l.pages[1].height + 2, "Pages separated by exact gap")
+	assert(l.pages[2].top == l.pages[1].height + 2, "Pages separated by exact gap")
 	local vis = layout.visible(l, l.pages[1].height - 3, 10)
-	check(#vis == 2 and vis[1] == 1 and vis[2] == 2, "Viewport crosses page boundary")
+	assert(#vis == 2 and vis[1] == 1 and vis[2] == 2, "Viewport crosses page boundary")
 	local big = layout.build(pages, 90, 10, 20, 2, 2)
 	local anchor = layout.reanchor(l, big, 10, 20)
 	local n, f = layout.at(l, 20)
 	local n2, f2 = layout.at(big, anchor + 10)
-	check(n == n2 and math.abs(f - f2) < 0.02, "Zoom preserves page and fractional reading position")
+	assert(n == n2 and math.abs(f - f2) < 0.02, "Zoom preserves page and fractional reading position")
 	local narrow = layout.build(pages, 90, 10, 20, 0.5, 2)
-	check(
+	assert(
 		layout.reanchor_x(narrow, big, 0, 90) == math.floor((big.width - 90) / 2 + 0.5),
 		"Zoom subtracts centered page padding"
 	)
-	check(layout.reanchor_x(big, narrow, 30, 90) == 0, "Zooming below fit width restores centered pages")
+	assert(layout.reanchor_x(big, narrow, 30, 90) == 0, "Zooming below fit width restores centered pages")
 	local resized = layout.build(pages, 70, 10, 20, 3, 2)
 	local horizontal = layout.reanchor_x(big, resized, 50, 70, 90)
-	check(
+	assert(
 		math.abs((horizontal + 35) / resized.width - 95 / big.width) < 0.01,
 		"Split resize preserves the old horizontal center"
 	)
 	local vertical = layout.reanchor(big, resized, 30, 12, 20)
 	local before_page, before_fraction = layout.at(big, 40)
 	local after_page, after_fraction = layout.at(resized, vertical + 6)
-	check(
+	assert(
 		before_page == after_page and math.abs(before_fraction - after_fraction) < 0.02,
 		"Resize uses both viewport heights"
 	)
@@ -56,15 +44,15 @@ do
 	for _, zoom in ipairs({ 4, 4.15, 4.37, 5.8, 8 }) do
 		local capped = layout.build(pages, 148, 15, 35, zoom, 2)
 		local _, px, py = cache_geometry:key(1, capped.pages[1], 15, 35)
-		check(not last_px or (px == last_px and py == last_py), "Capped raster dimensions remain stable across zooms")
+		assert(not last_px or (px == last_px and py == last_py), "Capped raster dimensions remain stable across zooms")
 		last_px, last_py = px, py
 	end
 	cache_geometry:close()
 	local parsed, err = backend.parse_info(
 		"Pages: 2\nPage 1 size: 400 x 600 pts\nPage 1 rot: 0\nPage 2 size: 400 x 600 pts\nPage 2 rot: 90\n"
 	)
-	check(parsed and parsed[2].width == 600 and parsed[2].height == 400, err or "Rotated page geometry")
-	check(not backend.parse_info("broken"), "Invalid metadata rejected")
+	assert(parsed and parsed[2].width == 600 and parsed[2].height == 400, err or "Rotated page geometry")
+	assert(not backend.parse_info("broken"), "Invalid metadata rejected")
 end
 
 -- Terminal reports may be missing, redirected, rounded or manually calibrated.

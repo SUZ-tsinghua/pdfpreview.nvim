@@ -1,15 +1,16 @@
 """Run the portable suites, optionally including the macOS native pipeline."""
+
 import argparse
 import importlib.util
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,7 +53,11 @@ def main():
             if importlib.util.find_spec(module) is None:
                 parser.error("install pixel-test dependencies: python3 -m pip install -r tests/requirements.txt")
     with tempfile.TemporaryDirectory(prefix="pdfpreview-tests-") as temporary:
-        env = dict(os.environ, NVIM_LOG_FILE=str(Path(temporary) / "nvim.log"))
+        env = dict(
+            os.environ,
+            NVIM_LOG_FILE=str(Path(temporary) / "nvim.log"),
+            PDFPREVIEW_TEST_NATIVE="1" if args.native else "0",
+        )
         lua = [nvim, "--headless", "-u", "NONE", "-i", "NONE", "-l"]
         suites = ["core", "reader", "surface", "selection", "translate"]
         if args.native:
@@ -63,13 +68,29 @@ def main():
         if args.native:
             info = subprocess.run(
                 [str(helper), str(ROOT / "tests/sample.pdf")],
-                input='{"id":1,"action":"info"}\n', text=True,
-                capture_output=True, check=True, timeout=15,
+                input='{"id":1,"action":"info"}\n',
+                text=True,
+                capture_output=True,
+                check=True,
+                timeout=15,
             )
             ui_api = subprocess.run(
-                [nvim, "--headless", "-u", "NONE", "-i", "NONE", "--cmd",
-                 "lua io.stdout:write(vim.api.nvim_ui_send and '1' or '0')", "+qa"],
-                env=env, capture_output=True, text=True, check=True, timeout=15,
+                [
+                    nvim,
+                    "--headless",
+                    "-u",
+                    "NONE",
+                    "-i",
+                    "NONE",
+                    "--cmd",
+                    "lua io.stdout:write(vim.api.nvim_ui_send and '1' or '0')",
+                    "+qa",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
             )
             if json.loads(info.stdout)["surface"] and ui_api.stdout == "1":
                 print("Running ui", flush=True)
