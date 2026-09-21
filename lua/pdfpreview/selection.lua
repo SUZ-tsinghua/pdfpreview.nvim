@@ -39,8 +39,9 @@ function M.rectangles(frame, pages, first, last)
 		if page and geometry and geometry.top < frame.y + frame.height and geometry.top + geometry.height > frame.y then
 			local left, top = text.left(frame, geometry), geometry.top - frame.y
 			local lines = {}
-			for i = n == first.page and first.index or 1, n == last.page and last.index or #page.words do
-				local word = page.words[i]
+			local units = text.units(page)
+			for i = n == first.page and first.index or 1, n == last.page and last.index or #units do
+				local word = units[i]
 				local rect = lines[word.line]
 				if not rect then
 					rect = { x1 = 1, y1 = 1, x2 = 0, y2 = 0 }
@@ -171,6 +172,10 @@ function M.new(s, config, active, repaint)
 		local a = self.start and self.pages[self.start.page]
 		local b = self.finish and self.pages[self.finish.page]
 		local first, last = text.range(a and text.hit(a, self.start, true), b and text.hit(b, self.finish))
+		if first and self.mode == "word" then
+			first = text.expand(self.pages[first.page], first, -1)
+			last = text.expand(self.pages[last.page], last, 1)
+		end
 		if not vim.deep_equal(first, self.first) or not vim.deep_equal(last, self.last) then
 			self.first, self.last = first, last
 			changed()
@@ -198,7 +203,7 @@ function M.new(s, config, active, repaint)
 		end
 		self.requested[n] = true
 		local generation = self.generation
-		self.source = self.source or text.new(s.path, config.pdftotext, s.pages)
+		self.source = self.source or text.new(s.path, config.pdftotext, s.pages, config)
 		self.source:get(n, function(page, err)
 			if s.closed or self.generation ~= generation then
 				return
@@ -210,14 +215,14 @@ function M.new(s, config, active, repaint)
 			end
 			self.pages[n] = page
 			changed()
-			if self.start and n == self.start.page and #page.words == 0 then
+			if self.start and n == self.start.page and #text.units(page) == 0 then
 				notice("This page has no selectable text (scanned PDFs need OCR).")
 				self.text_pending = nil
 			end
 			self:resolve()
 		end)
 	end
-	function self:mouse(kind, mouse)
+	function self:mouse(kind, mouse, mode)
 		mouse = mouse or vim.fn.getmousepos()
 		if kind == "release" then
 			if not self.dragging then
@@ -241,10 +246,12 @@ function M.new(s, config, active, repaint)
 			if not point then
 				return
 			end
-			if vim.fn.executable(config.pdftotext) ~= 1 then
-				notice("Missing pdftotext; install Poppler to select PDF text.", vim.log.levels.ERROR)
+			local available, err = text.available(config)
+			if not available then
+				notice(err, vim.log.levels.ERROR)
 				return
 			end
+			self.mode = mode or "character"
 			self.start, self.dragging = point, true
 		end
 		if not point or not self.start then

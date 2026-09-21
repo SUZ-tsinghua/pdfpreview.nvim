@@ -21,6 +21,7 @@ M.defaults = {
 	pdfinfo = "pdfinfo",
 	pdftoppm = "pdftoppm",
 	pdftotext = "pdftotext",
+	text_backend = "auto", -- PDFKit characters on macOS; Poppler words otherwise.
 	translation = { provider = "google", source = "en", target = "zh-CN", timeout = 10, fallback = true },
 	scroll_step = 1,
 	scroll_animation_ms = 40,
@@ -967,6 +968,9 @@ function M.stats()
 	return {
 		renderer = s.renderer,
 		rasterizer = s.backend.rasterizer,
+		text_backend = s.selection.source and s.selection.source.backend
+			or require("pdfpreview.text").available(M.config),
+		text_fallback = s.selection.source and s.selection.source.fallback,
 		zoom = (s.zoom_target or s.zoom) * 100,
 		displayed_zoom = s.frame and s.frame.zoom * 100 or nil,
 		refining = s.frame and s.frame.refining or false,
@@ -1017,7 +1021,7 @@ local function mappings(s)
 			local lhs = key:gsub("<", "<" .. prefix)
 			vim.keymap.set("n", lhs, function()
 				local mouse = vim.fn.getmousepos()
-				s.selection:mouse(kind, mouse)
+				s.selection:mouse(kind, mouse, prefix ~= "" and "word" or nil)
 				return mouse.winid == s.win and "" or lhs
 			end, { buffer = s.buf, silent = true, expr = true, desc = "Select PDF text" })
 		end
@@ -1238,6 +1242,7 @@ function M.setup(opts)
 	assert(M.config.jobs >= 1 and M.config.cache_pages >= 1, "jobs and cache_pages must be positive")
 	assert(vim.tbl_contains({ "auto", "unicode", "viewport", "surface" }, M.config.renderer), "Invalid renderer")
 	assert(vim.tbl_contains({ "auto", "native", "poppler" }, M.config.rasterizer), "Invalid rasterizer")
+	assert(vim.tbl_contains({ "auto", "pdfkit", "poppler" }, M.config.text_backend), "Invalid text_backend")
 	assert(type(M.config.compact_placeholders) == "boolean", "compact_placeholders must be boolean")
 	assert(type(M.config.prefetch_zoom) == "boolean", "prefetch_zoom must be boolean")
 	local translation = M.config.translation

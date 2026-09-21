@@ -43,7 +43,8 @@ Run :checkhealth pdfpreview to check dependencies and terminal identification.
 
 MAPPINGS                                                 *pdfpreview-mappings*
 
-Left click/drag   Select a word or range of PDF text.
+Left click/drag   Select characters or a range of PDF text (words with Poppler).
+Double-click      Select a whole word.
 y / "ay           Copy selected text to the unnamed / named register.
 Ctrl-C / Cmd-C    Copy to the system clipboard (when forwarded by the terminal).
 Right click       Open Copy / Translate menu.
@@ -63,22 +64,27 @@ when forwarded by the terminal. True pinch-to-zoom is not supported.
 
 TEXT SELECTION                                           *pdfpreview-selection*
 
-Drag from a word to select through another word, then press y to yank or
-Ctrl-C to copy. Hold the button and scroll to extend across pages. Selection
+Drag across text, then press y to yank or Ctrl-C to copy. Double-click selects
+a whole word. Hold the button and scroll to extend across pages. Selection
 stays attached to PDF coordinates through zooming, scrolling and resizing.
 The surface renderer composites blue highlights into the PDF pixels, so
 they follow scrolling, refinement and sidebar resizing. Other renderers
 temporarily hide highlights while an overlapping floating window or command
 line is open; copying and the logical selection remain available.
 
-Poppler's pdftotext reads the local PDF text layer lazily, independently of
-the rasterizer. Copying waits for any pending extraction. No OCR is performed:
-scanned pages without a text layer cannot be selected. Selection snaps to
-words at terminal-cell mouse precision. Extracted line breaks and reading
-order are retained; complex columns or encodings may affect that order.
+Text extraction is lazy and independent of the rasterizer. With the macOS
+helper built, PDFKit supplies character ranges and bounds. Combining marks
+and emoji remain together. Terminal mouse positions still use cells; zoom in
+to select small letters more precisely. Copying waits for pending extraction.
+No OCR is performed: scanned pages without a text layer cannot be selected.
+Extracted spaces, line breaks and reading order are retained; complex columns
+or encodings may affect that order.
 
-Missing pdftotext disables selection without preventing PDF rendering.
-The executable can be configured with the pdftotext option below.
+text_backend = "auto" prefers PDFKit, falling back to Poppler word selection
+if unavailable. Rebuild older helpers with make native. "pdfkit" requires the
+macOS helper; "poppler" always uses pdftotext. :PdfStats reports the active
+text backend and any fallback reason. Without either extractor, selection is
+unavailable but rendering still works.
 
 Lua API: require("pdfpreview").copy(register) copies the current selection;
 the default register is "+". A ready selection returns the copied string,
@@ -124,6 +130,7 @@ native_renderer = nil      Optional absolute path to the compiled helper.
 pdfinfo = "pdfinfo"        Poppler metadata executable.
 pdftoppm = "pdftoppm"      Poppler rendering executable.
 pdftotext = "pdftotext"    Poppler text extraction executable.
+text_backend = "auto"     "auto", "pdfkit" (macOS characters), "poppler" (words).
 scroll_step = 1            Rows per wheel event.
 scroll_animation_ms = 40   Surface movement interpolation (0-200 ms).
 surface_refine_ms = 100    Idle detail redraw delay (0-2000 ms).
@@ -228,9 +235,8 @@ Hiding a reader releases terminal images and stops refinement; closing stops
 all workers and removes temporary files after they exit. PDFs remain local.
 PDF buffers disable Snacks scroll animation to keep image rows aligned.
 
-Only one viewport is maintained per document buffer. Character-level text
-selection, OCR, search, links, annotations, outlines, SyncTeX and passwords
-are not supported.
+Only one viewport is maintained per document buffer. OCR, search, links,
+annotations, outlines, SyncTeX and passwords are not supported.
 
 See README.md for installation, Snacks configuration and development tests.
 

@@ -56,6 +56,72 @@ function M.parse(xml, geometry)
 	return { words = words }
 end
 
+function M.parse_native(output)
+	local ok, result = pcall(vim.json.decode, output)
+	if not ok or type(result) ~= "table" or result.id ~= 1 then
+		return nil, "Invalid PDFKit text response; rebuild the native helper with make native"
+	end
+	if type(result.error) == "string" then
+		return nil, "PDFKit: " .. result.error:sub(1, 500)
+	end
+	local page = result.text_page
+	if
+		type(page) ~= "table"
+		or type(page.characters) ~= "table"
+		or not vim.islist(page.characters)
+		or #page.characters > 200000
+	then
+		return nil, "Invalid PDFKit character list"
+	end
+	for _, character in ipairs(page.characters) do
+		if
+			type(character) ~= "table"
+			or type(character.text) ~= "string"
+			or character.text == ""
+			or type(character.prefix) ~= "string"
+		then
+			return nil, "Invalid PDFKit character text"
+		end
+		for _, key in ipairs({ "x1", "y1", "x2", "y2" }) do
+			local value = character[key]
+			if type(value) ~= "number" or value ~= value or value < 0 or value > 1 then
+				return nil, "Invalid PDFKit character bounds"
+			end
+		end
+		if character.x2 <= character.x1 or character.y2 <= character.y1 then
+			return nil, "Empty PDFKit character bounds"
+		end
+		for _, key in ipairs({ "line", "word" }) do
+			local value = character[key]
+			if type(value) ~= "number" or value < 0 or value >= math.huge or value ~= math.floor(value) then
+				return nil, "Invalid PDFKit text grouping"
+			end
+		end
+	end
+	page.backend = "pdfkit"
+	return page
+end
+
+function M.units(page)
+	return page.characters or page.words
+end
+
+function M.available(opts)
+	if opts.text_backend ~= "poppler" and require("pdfpreview.native").available(opts) then
+		return "pdfkit"
+	end
+	if opts.text_backend == "pdfkit" then
+		return nil, "PDFKit text selection needs the macOS helper; run make native in the plugin directory."
+	end
+	if vim.fn.executable(opts.pdftotext) == 1 then
+		return "poppler"
+	end
+	if opts.text_backend == "poppler" then
+		return nil, "Missing pdftotext; install Poppler to select PDF text."
+	end
+	return nil, "Text selection needs the macOS helper (make native) or Poppler's pdftotext."
+end
+
 function M.left(frame, page)
 	local left = (math.max(frame.width, frame.layout.width) - page.width) / 2
 	return (frame.layout.precise and left or math.floor(left)) - frame.x
@@ -82,16 +148,37 @@ function M.point(frame, x, y)
 end
 
 function M.hit(page, point, strict)
-	local best, distance
-	for index, word in ipairs(page.words) do
+	local best, distance, center
+	for index, word in ipairs(M.units(page)) do
 		local dx = math.max(word.x1 - point.x, 0, point.x - word.x2) / point.tx
 		local dy = math.max(word.y1 - point.y, 0, point.y - word.y2) / point.ty
 		local d = dx * dx + dy * dy
-		if (not strict or (dx <= 1 and dy <= 1)) and (not distance or d < distance) then
-			best, distance = index, d
+		local c = ((word.x1 + word.x2) / 2 - point.x) ^ 2 / point.tx ^ 2
+			+ ((word.y1 + word.y2) / 2 - point.y) ^ 2 / point.ty ^ 2
+		if
+			(not strict or (dx <= 1 and dy <= 1)) and (not distance or d < distance or (d == distance and c < center))
+		then
+			best, distance, center = index, d, c
 		end
 	end
 	return best and { page = point.page, index = best } or nil
+end
+
+function M.expand(page, point, direction)
+	if not page.characters then
+		return point
+	end
+	local index, units = point.index, page.characters
+	local group = units[index]
+	while
+		units[index + direction]
+		and units[index + direction].word == group.word
+		and units[index + direction].line == group.line
+		and units[direction > 0 and index + direction or index].prefix == ""
+	do
+		index = index + direction
+	end
+	return { page = point.page, index = index }
 end
 
 function M.range(a, b)
@@ -118,12 +205,17 @@ function M.extract(pages, first, last)
 		if not page then
 			return
 		end
-		for i = n == first.page and first.index or 1, n == last.page and last.index or #page.words do
-			local word = page.words[i]
+		local units = M.units(page)
+		for i = n == first.page and first.index or 1, n == last.page and last.index or #units do
+			local word = units[i]
 			if previous then
-				local separator = previous_page ~= n and "\n\n" or previous.line ~= word.line and "\n" or " "
+				local separator = previous_page ~= n and "\n\n"
+					or page.characters and word.prefix
+					or previous.line ~= word.line and "\n"
+					or " "
 				if
-					separator == " "
+					not page.characters
+					and separator == " "
 					and cjk(vim.fn.strcharpart(previous.text, vim.fn.strchars(previous.text) - 1))
 					and cjk(word.text)
 				then
@@ -140,71 +232,100 @@ end
 
 -- Extraction is lazy, serialized and bounded independently of raster work.
 -- The selection owns any pages it needs after they leave this small LRU.
-function M.new(path, executable, geometry)
-	local self = { cache = {}, queue = {}, pending = {}, tick = 0, closed = false }
+function M.new(path, executable, geometry, opts)
+	opts = opts or { text_backend = "poppler", pdftotext = executable }
+	local mode = opts.text_backend or "auto"
+	local native = require("pdfpreview.native")
+	local provider = mode == "pdfkit" or (mode == "auto" and native.available(opts))
+	local self =
+		{ cache = {}, queue = {}, pending = {}, tick = 0, closed = false, backend = provider and "pdfkit" or "poppler" }
 	function self:pump()
 		if self.closed or self.running or #self.queue == 0 then
 			return
 		end
 		local n = table.remove(self.queue, 1)
 		self.running = n
-		local function finish(result)
-			vim.schedule(function()
-				self.running, self.process = nil, nil
-				if self.closed then
-					return
-				end
-				local page, err
-				if result.code == 0 then
-					page, err = M.parse(result.stdout or "", geometry[n])
-				else
-					local detail = vim.trim(result.stderr or "")
-					if detail == "" then
-						detail = result.code == 124 and "pdftotext timed out"
-							or "pdftotext exited with code " .. tostring(result.code)
-					end
-					err = "Text extraction failed: " .. detail:sub(1, 500)
-				end
-				self.tick = self.tick + 1
-				self.cache[n] = { page = page, error = err, used = self.tick }
-				if vim.tbl_count(self.cache) > 8 then
-					local oldest
-					for key, entry in pairs(self.cache) do
-						if not oldest or entry.used < self.cache[oldest].used then
-							oldest = key
-						end
-					end
-					self.cache[oldest] = nil
-				end
-				local callbacks = self.pending[n]
-				self.pending[n] = nil
-				for _, callback in ipairs(callbacks) do
+		local run
+		run = function(backend)
+			local function finish(result)
+				vim.schedule(function()
+					self.process = nil
 					if self.closed then
+						self.running = nil
 						return
 					end
-					callback(page, err)
-				end
-				self:pump()
-			end)
+					local page, err
+					if result.code == 0 then
+						if backend == "pdfkit" then
+							page, err = M.parse_native(result.stdout or "")
+						else
+							page, err = M.parse(result.stdout or "", geometry[n])
+							if page then
+								page.backend = "poppler"
+							end
+						end
+					else
+						local detail = vim.trim(result.stderr or "")
+						if detail == "" then
+							detail = result.code == 124 and (backend .. " timed out")
+								or (backend .. " exited with code " .. tostring(result.code))
+						end
+						err = "Text extraction failed: " .. detail:sub(1, 500)
+					end
+					if not page and backend == "pdfkit" and mode == "auto" and vim.fn.executable(executable) == 1 then
+						self.backend, self.fallback = "poppler", err
+						run("poppler")
+						return
+					end
+					self.running = nil
+					self.tick = self.tick + 1
+					self.cache[n] = { page = page, error = err, used = self.tick }
+					if vim.tbl_count(self.cache) > 8 then
+						local oldest
+						for key, entry in pairs(self.cache) do
+							if not oldest or entry.used < self.cache[oldest].used then
+								oldest = key
+							end
+						end
+						self.cache[oldest] = nil
+					end
+					local callbacks = self.pending[n]
+					self.pending[n] = nil
+					for _, callback in ipairs(callbacks) do
+						if self.closed then
+							return
+						end
+						callback(page, err)
+					end
+					self:pump()
+				end)
+			end
+			local command = {
+				executable,
+				"-f",
+				tostring(n),
+				"-l",
+				tostring(n),
+				"-bbox-layout",
+				"-cropbox",
+				"-enc",
+				"UTF-8",
+				path,
+				"-",
+			}
+			local options = { text = true, timeout = 15000 }
+			if backend == "pdfkit" then
+				command = { native.executable(opts), path }
+				options.stdin = vim.json.encode({ id = 1, action = "text", page = n }) .. "\n"
+			end
+			local ok, process = pcall(vim.system, command, options, finish)
+			if ok then
+				self.process = process
+			else
+				finish({ code = -1, stderr = tostring(process) })
+			end
 		end
-		local ok, process = pcall(vim.system, {
-			executable,
-			"-f",
-			tostring(n),
-			"-l",
-			tostring(n),
-			"-bbox-layout",
-			"-cropbox",
-			"-enc",
-			"UTF-8",
-			path,
-			"-",
-		}, { text = true, timeout = 15000 }, finish)
-		if ok then
-			self.process = process
-		else
-			finish({ code = -1, stderr = tostring(process) })
-		end
+		run(self.backend)
 	end
 	function self:get(n, callback)
 		if self.closed then

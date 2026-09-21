@@ -56,7 +56,7 @@ def main():
         lua = [nvim, "--headless", "-u", "NONE", "-i", "NONE", "-l"]
         suites = ["core", "reader", "surface", "selection", "translate"]
         if args.native:
-            suites.append("native")
+            suites.extend(["native", "pdfkit"])
         for suite in suites:
             print(f"Running {suite}", flush=True)
             run(lua + [f"tests/{suite}.lua"], env)

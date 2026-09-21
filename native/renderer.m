@@ -1,10 +1,11 @@
-// Persistent, stdin/stdout-only PDF raster worker for local macOS sessions.
-// Requests and responses are one JSON object per line. No terminal graphics
-// are emitted here: every output is an independent RGBA or PNG raster.
+// Persistent, stdin/stdout-only PDF worker for local macOS sessions.
+// Requests and responses are one JSON object per line. Outputs are independent
+// RGBA/PNG rasters or PDFKit text bounds; no terminal graphics are emitted here.
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
+#import <PDFKit/PDFKit.h>
 #import <simd/simd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -592,6 +593,67 @@ static NSArray *pageGeometry(CGPDFDocumentRef document) {
     return pages;
 }
 
+// Text stays independent of raster resolution. PDFKit's UTF-16 character
+// indices are grouped into composed sequences so copying cannot split an
+// emoji, surrogate pair or combining mark. Spaces/newlines remain exact.
+static NSDictionary *textPage(PDFDocument *document, CGPDFPageRef rasterPage, NSUInteger index) {
+    PDFPage *page = [document pageAtIndex:index];
+    NSString *string = page.string ?: @"";
+    if (string.length > 200000) return @{ @"error": @"PDF text page exceeds 200000 UTF-16 units" };
+    CGRect crop = CGRectIntersection(CGPDFPageGetBoxRect(rasterPage, kCGPDFCropBox),
+                                     CGPDFPageGetBoxRect(rasterPage, kCGPDFMediaBox));
+    CGFloat width = crop.size.width, height = crop.size.height;
+    if (CGRectIsEmpty(crop) || !isfinite(width) || !isfinite(height))
+        return @{ @"error": @"Invalid PDF text crop box" };
+    if (CGPDFPageGetRotationAngle(rasterPage) % 180 != 0) {
+        width = crop.size.height;
+        height = crop.size.width;
+    }
+    CGRect display = CGRectMake(0, 0, width, height);
+    CGAffineTransform transform = CGPDFPageGetDrawingTransform(rasterPage, kCGPDFCropBox, display, 0, false);
+    NSMutableArray<NSValue *> *words = [NSMutableArray array];
+    [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
+                              options:NSStringEnumerationByWords | NSStringEnumerationSubstringNotRequired
+                           usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
+        (void)substring; (void)enclosing; (void)stop;
+        [words addObject:[NSValue valueWithRange:range]];
+    }];
+    NSMutableArray *characters = [NSMutableArray array];
+    NSMutableString *prefix = [NSMutableString string];
+    NSCharacterSet *nonWhitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
+    __block NSUInteger line = 1, word = 0;
+    [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
+                              options:NSStringEnumerationByComposedCharacterSequences
+                           usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
+        (void)enclosing; (void)stop;
+        if ([substring rangeOfCharacterFromSet:nonWhitespace].location == NSNotFound) {
+            [prefix appendString:substring];
+            if ([substring rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) line++;
+            return;
+        }
+        // Use the string-range API for geometry too. characterBoundsAtIndex:
+        // can omit inserted linefeeds from its index space on macOS, shifting
+        // every following line relative to page.string. A one-grapheme
+        // selection keeps text and bounds aligned and includes the line height.
+        PDFSelection *selection = [page selectionForRange:range];
+        if (!selection) return;
+        CGRect bounds = [selection boundsForPage:page];
+        if (CGRectIsEmpty(bounds) || CGRectIsInfinite(bounds) ||
+            !isfinite(bounds.origin.x) || !isfinite(bounds.origin.y) ||
+            !isfinite(bounds.size.width) || !isfinite(bounds.size.height)) return;
+        bounds = CGRectIntersection(display, CGRectApplyAffineTransform(bounds, transform));
+        if (CGRectIsEmpty(bounds)) return;
+        while (word < words.count && NSMaxRange(words[word].rangeValue) <= range.location) word++;
+        NSUInteger group = word * 2;
+        if (word < words.count && NSLocationInRange(range.location, words[word].rangeValue)) group++;
+        [characters addObject:@{ @"text": substring, @"prefix": [prefix copy], @"line": @(line), @"word": @(group),
+            @"x1": @(CGRectGetMinX(bounds) / width), @"x2": @(CGRectGetMaxX(bounds) / width),
+            @"y1": @((height - CGRectGetMaxY(bounds)) / height), @"y2": @((height - CGRectGetMinY(bounds)) / height) }];
+        [prefix setString:@""];
+    }];
+    return @{ @"text_page": @{ @"characters": characters } };
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -611,6 +673,7 @@ int main(int argc, const char *argv[]) {
         }
         pixelCache = [NSMutableDictionary dictionary];
         rasterColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        PDFDocument *textDocument;
         char *line = NULL;
         size_t capacity = 0;
         ssize_t length;
@@ -624,6 +687,28 @@ int main(int argc, const char *argv[]) {
                     continue;
                 }
                 CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+                if ([request[@"action"] isEqual:@"text"]) {
+                    NSNumber *number = request[@"page"];
+                    NSDictionary *result;
+                    if (![number isKindOfClass:NSNumber.class] || number.doubleValue != number.integerValue ||
+                        number.integerValue < 1 || (NSUInteger)number.integerValue > CGPDFDocumentGetNumberOfPages(document)) {
+                        result = @{ @"error": @"Invalid text page number" };
+                    } else {
+                        @try {
+                            if (!textDocument) textDocument = [[PDFDocument alloc] initWithURL:url];
+                            result = textDocument && !textDocument.isLocked ?
+                                textPage(textDocument, CGPDFDocumentGetPage(document, number.integerValue), number.integerValue - 1) :
+                                @{ @"error": @"PDFKit could not open the PDF text layer" };
+                        } @catch (NSException *exception) {
+                            (void)exception;
+                            result = @{ @"error": @"PDFKit could not extract this text page" };
+                        }
+                    }
+                    NSMutableDictionary *response = [result mutableCopy];
+                    response[@"id"] = request[@"id"];
+                    reply(response);
+                    continue;
+                }
                 if ([request[@"action"] isEqual:@"info"]) {
                     NSArray *pages = pageGeometry(document);
                     if (pages) reply(@{ @"id": request[@"id"], @"protocol": @3, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes), @"selection_cache_bytes": @(selectionBytes) });

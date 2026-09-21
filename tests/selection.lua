@@ -155,6 +155,7 @@ for _, renderer in ipairs(renderers) do
 	viewer.setup({
 		renderer = renderer,
 		rasterizer = renderer == "surface" and "native" or "poppler",
+		text_backend = "poppler",
 		cell_width = 10,
 		cell_height = 20,
 		scroll_animation_ms = 0,
@@ -433,7 +434,7 @@ local ok, err = pcall(function()
 			"nvim_exec_lua",
 			[[
 			local root, renderer = ...
-			viewer.setup({renderer=renderer, rasterizer='poppler', cell_width=10, cell_height=20})
+			viewer.setup({renderer=renderer, rasterizer='poppler', text_backend='poppler', cell_width=10, cell_height=20})
 			s = assert(viewer.open(root .. '/tests/sample.pdf'))
 			assert(vim.wait(15000, function() return s.frame and not s.pending end, 2))
 			s.selection:load(1)

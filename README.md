@@ -7,7 +7,7 @@ On supported Macs, a Metal compositor moves cached pages at fractional pixel pos
 ## Requirements
 
 - Neovim 0.11+ in a local terminal. The Metal compositor requires Neovim 0.12+.
-- Poppler: `pdfinfo`, `pdftoppm` and `pdftotext` on `PATH` (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu). Text selection uses `pdftotext` with either rasterizer.
+- Poppler: `pdfinfo`, `pdftoppm` and `pdftotext` on `PATH` (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu). The macOS helper uses PDFKit for character selection; `pdftotext` supplies word selection on other systems and as a fallback.
 - A terminal supporting Kitty graphics, Unicode image placeholders and local file transmission. Otty on macOS has been tested; Kitty and Ghostty are protocol targets awaiting visual verification.
 - `termguicolors` enabled; `mouse = "a"` for scrolling and text selection.
 - Optional on macOS: Apple's Command Line Tools to build the native helper. Metal composition requires a unified-memory Metal device.
@@ -61,7 +61,8 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 
 | Input | Action |
 | --- | --- |
-| Left click / drag | Select a word / range of PDF text |
+| Left click / drag | Select a character / range of PDF text (words with Poppler) |
+| Double-click | Select a whole word |
 | `y` / `"ay` | Copy selected text to the unnamed / named register |
 | Ctrl-C / `:PdfCopy` | Copy selected text to the system clipboard |
 | Right click | Open Copy / Translate menu |
@@ -80,13 +81,13 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 
 Zoom is relative to fit width: 100% fits the widest page, and the default range is 10%–800%. Zoom and resize preserve the approximate reading position at the viewport center.
 
-Drag from a word to select through another word, then press `y` to yank or Ctrl-C to copy. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. The surface renderer includes the highlight in the PDF pixels, including during refinement and sidebar resizing. Other renderers temporarily hide highlights when a popup overlaps the PDF, while retaining the selection.
+Drag across text, then press `y` to yank or Ctrl-C to copy. On macOS with the native helper built, selection follows individual characters; double-click to select a whole word. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. The surface renderer includes the highlight in the PDF pixels, including during refinement and sidebar resizing. Other renderers temporarily hide highlights when a popup overlaps the PDF, while retaining the selection.
 
 Right-click selected text to **copy** or **translate** it. Translation appears in a Neovim floating window; click outside, press `q` or Escape to dismiss the menu or result without closing the PDF. Without an existing selection, right-clicking a word selects it first. `:PdfTranslate` translates the current selection too.
 
 Translation defaults to English → Simplified Chinese through Google's free web endpoint, with MyMemory as a fallback for short selections (up to 500 UTF-8 bytes). It needs `curl` and internet access, with no account or API key. Only choosing Translate sends the selected text to these services. Free services can impose quotas or change their endpoints; failures appear in the float. Repeated results are cached in memory (32 entries). Disable automatic fallback with `translation = { fallback = false }`, or select MyMemory directly with `translation = { provider = "mymemory" }`.
 
-Text is extracted locally from the PDF's text layer on demand. Selection snaps to words at terminal-cell mouse precision and preserves extracted line breaks and reading order; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. If `pdftotext` is missing, rendering still works and `:checkhealth pdfpreview` reports the missing dependency. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
+Text is extracted locally from the PDF's text layer on demand. `text_backend = "auto"` uses PDFKit character ranges on macOS when the helper is built, falling back to Poppler word bounds if unavailable. This choice is independent of the rasterizer. Force either with `"pdfkit"` or `"poppler"`; rebuild existing macOS helpers with `make native`. `:PdfStats` reports the active text backend and any fallback reason. Mouse positions still arrive in terminal cells, so zooming in helps select small letters. Combining marks and emoji stay together when copied. Extracted spaces, line breaks and reading order are preserved; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
 
 True pinch-to-zoom is not supported. The plugin receives discrete wheel events; the surface renderer interpolates their movement over 40 ms by default.
 
@@ -99,6 +100,7 @@ require("pdfpreview").setup({
   auto_open = false,
   renderer = "auto",       -- auto, surface, viewport, unicode
   rasterizer = "auto",     -- auto, native, poppler
+  text_backend = "auto",   -- auto, pdfkit (characters), poppler (words)
   translation = { source = "en", target = "zh-CN", provider = "google", fallback = true, timeout = 10 },
   scroll_step = 1,          -- Rows per wheel event
   scroll_animation_ms = 40, -- Surface interpolation; 0 disables it
@@ -138,7 +140,7 @@ Oversized viewports, compositor errors or missing terminal acknowledgments fall 
 ## Limitations
 
 - One viewport per document buffer; multiple splits do not have independent positions.
-- Text selection is word-based; no character-level selection or OCR.
+- Character selection requires the macOS PDFKit helper; Poppler selection is word-based. No OCR.
 - No PDF search, links, annotations, outline or SyncTeX.
 - No password-protected documents.
 - Tile and Unicode paths can look softer at high zoom because their raster size is capped.
@@ -166,6 +168,7 @@ make test-native PYTHON=.venv/bin/python
 | `reader.lua` | Poppler readers, page boundaries, zoom, dimension changes and cleanup |
 | `surface.lua` | Acknowledgments, cancellation, stale results and bounded file lifetimes |
 | `selection.lua` | Text extraction, drag/yank and context-menu mouse events, cross-page copying, popup dismissal and cleanup |
+| `pdfkit.lua` | Native character extraction, partial-word copying, word expansion, fallback and cancellation |
 | `translate.lua` | Translation parsing, stdin transport, bounded cache, fallback, errors and cancellation |
 | `native.lua` | Actual native workers, idle refinement, protocol validation and fallback |
 | `ui.lua` | Embedded Neovim image transport, nested waits and stable grids |

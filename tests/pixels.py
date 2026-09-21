@@ -11,7 +11,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def fixture(path, content, crop=False):
+def fixture(path, content, crop=False, unicode_map=None):
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
                b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /Count 4 >>"]
     for rotation in (0, 90, 180, 270):
@@ -19,7 +19,10 @@ def fixture(path, content, crop=False):
         objects.append((f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] {box} "
                         f"/Rotate {rotation} /Resources << /Font << /F1 8 0 R >> >> /Contents 7 0 R >>").encode())
     objects.append(f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"\nendstream")
-    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    mapping = b"/ToUnicode 9 0 R" if unicode_map else b""
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica " + mapping + b" >>")
+    if unicode_map:
+        objects.append(f"<< /Length {len(unicode_map)} >>\nstream\n".encode() + unicode_map + b"\nendstream")
     data, offsets = b"%PDF-1.4\n", [0]
     for index, obj in enumerate(objects, 1):
         offsets.append(len(data))
@@ -68,6 +71,56 @@ class Worker:
 
 def pixels(path, width, height):
     return np.frombuffer(path.read_bytes(), dtype=np.uint8).reshape(height, width, 4)
+
+
+def check_text(directory):
+    pdf = directory / 'character bounds.pdf'
+    fixture(pdf, b'BT /F1 24 Tf 65 480 Td (PDF PREVIEW) Tj 0 -50 Td (SECOND LINE) Tj ET\n', crop=True)
+    first = None
+    with Worker(pdf) as worker:
+        pages = worker.checked(action='info')['pages']
+        for n, geometry in enumerate(pages, 1):
+            chars = worker.checked(action='text', page=n)['text_page']['characters']
+            assert ''.join(c['prefix'] + c['text'] for c in chars) == 'PDF PREVIEW\nSECOND LINE', chars
+            assert len(chars) == 20, 'Inserted linefeeds do not shift subsequent character indices'
+            if first is None:
+                first = chars
+                assert abs(chars[0]['x1'] - 25/320) < 1e-6
+                assert abs(chars[10]['x1'] - 25/320) < 1e-6, 'Second line starts at the same PDF x coordinate'
+            width, height = int(geometry['width'] * 3), int(geometry['height'] * 3)
+            output = directory / 'text.rgba'
+            worker.checked(page=n, px=width, py=height, x=0, y=0, width=width, height=height, format=32, file=str(output))
+            raster = pixels(output, width, height)
+            for source, char in zip(first, chars):
+                box = [source[k] for k in ['x1', 'y1', 'x2', 'y2']]
+                for _ in range(n - 1):
+                    x1, y1, x2, y2 = box
+                    box = [1-y2, x1, 1-y1, x2]
+                assert np.allclose(box, [char[k] for k in ['x1', 'y1', 'x2', 'y2']], atol=1e-6), (n, char)
+                x1, x2 = int(char['x1'] * width), int(np.ceil(char['x2'] * width))
+                y1, y2 = int(char['y1'] * height), int(np.ceil(char['y2'] * height))
+                assert np.any(raster[y1:y2, x1:x2, :3] < 80), 'Every character box covers its rendered glyph'
+        for page in [0, 5, 1.5, '1']:
+            assert 'error' in worker.request(action='text', page=page)
+        assert 'text_page' in worker.checked(action='text', page=1), 'Invalid text requests do not corrupt the worker'
+
+    # Map three visible glyphs to a CJK character, combining sequence and emoji.
+    # This exercises PDF UTF-16 ranges without relying on installed fonts.
+    cmap = (b'/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n'
+            b'/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
+            b'/CMapName /TestUnicode def /CMapType 2 def\n'
+            b'1 begincodespacerange <00> <FF> endcodespacerange\n'
+            b'3 beginbfchar <41> <4E2D> <42> <00650301> <43> <D83DDE00> endbfchar\n'
+            b'endcmap CMapName currentdict /CMap defineresource pop end end\n')
+    fixture(pdf, b'BT /F1 24 Tf 65 480 Td (ABC) Tj ET\n', unicode_map=cmap)
+    with Worker(pdf) as worker:
+        chars = worker.checked(action='text', page=1)['text_page']['characters']
+        assert [c['text'] for c in chars] == ['中', 'e\u0301', '😀'], chars
+        assert all(c['x2'] > c['x1'] and c['y2'] > c['y1'] for c in chars)
+    fixture(pdf, b'0 0 0 rg 65 480 20 20 re f\n')
+    with Worker(pdf) as worker:
+        assert worker.checked(action='text', page=1)['text_page']['characters'] == [], 'Image/vector-only pages are not OCRed'
+    print('PASS: PDFKit characters, multiline indices, rotated CropBox alignment, glyph coverage, Unicode clusters and empty pages')
 
 
 def check_rasters(directory, pdf):
@@ -257,6 +310,7 @@ with tempfile.TemporaryDirectory(prefix='pdfpreview-refine-pixels-') as director
                b'0 0 0 rg BT /F1 9 Tf 65 330 Td (Direct viewport vector text) Tj ET\n'
                b'0.3 w 0 0 0 RG 30 300 m 120 580 240 20 370 300 c S\n')
     fixture(pdf, content, crop=True)
+    check_text(directory)
     check_rasters(directory, pdf)
     check_metal(directory, pdf)
     check_selections(directory, pdf)

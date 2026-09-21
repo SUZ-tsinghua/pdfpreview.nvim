@@ -145,7 +145,7 @@ function M.new(s, config)
 			return
 		end
 		if not s.selection.start then
-			s.selection:mouse("press", mouse)
+			s.selection:mouse("press", mouse, "word")
 			s.selection:mouse("release", mouse)
 		end
 		floating({ " 复制", " 翻译" }, " PDF ", mouse, 16, 2, function(index)
