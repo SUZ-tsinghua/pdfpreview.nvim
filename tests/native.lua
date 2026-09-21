@@ -103,6 +103,14 @@ assert(
 		and s.backend.refiner.output_cache_bytes == 0,
 	"Refinement retains no source pixels, textures or output mappings"
 )
+local selection_bytes = 0
+for _, entry in ipairs(s.surface_state.entries) do
+	selection_bytes = selection_bytes + entry.image.width * entry.image.height * 4
+end
+assert(
+	s.backend.refiner.selection_cache_bytes == selection_bytes and selection_bytes <= 64 * 1024 * 1024,
+	"The refiner retains exactly one bounded, clean viewport for dragging"
+)
 local ns = vim.api.nvim_get_namespaces().pdfpreview
 local function grid()
 	assert(vim.api.nvim_buf_line_count(s.buf) == s.height, "Surface backing text stays bounded by window height")

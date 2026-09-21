@@ -82,7 +82,7 @@ local function cancel_refinement(s, closing)
 	if not p then
 		return
 	end
-	p.refine_frame = nil
+	p.refine_frame, p.refined_source = nil, nil
 	if p.refine_timer then
 		p.refine_timer:stop()
 		if closing then
@@ -123,6 +123,114 @@ local function refinement_request(source, scale)
 		rect.y1, rect.y2 = rect.y1 * sy, rect.y2 * sy
 	end
 	return request, math.min(sx, sy)
+end
+
+local function refinement_files(s, p, request)
+	p.refine_sequence = (p.refine_sequence or 0) + 1
+	local files = {}
+	for index, part in ipairs(request.parts) do
+		part.file = s.backend.dir .. "/refine-" .. p.refine_sequence .. "-" .. index .. ".rgba"
+		files[#files + 1] = part.file
+	end
+	return files
+end
+
+local function publish_refined(s, p, hooks, target, request, files, scale, result)
+	-- Upload files live until the ACK; the native worker retains clean pixels.
+	local waiting = { ids = {}, files = files, keep = vim.tbl_extend("force", {}, p.files) }
+	for _, file in ipairs(files) do
+		p.files[file] = true
+	end
+	p.awaiting = waiting
+	local refined = vim.tbl_extend("force", {}, target)
+	refined.refining, refined.refined, refined.compose_ms = false, true, result.render_ms
+	refined.refinement_scale = scale
+	local ok, err = pcall(graphics.synchronized, function()
+		for index, part in ipairs(request.parts) do
+			local image = p.entries[index].image
+			graphics.replace(image, part.file, image.cols, image.rows, {
+				format = 32,
+				quiet = 0,
+				crop = { width = part.width, height = request.height },
+			})
+			waiting.ids[image.id] = true
+		end
+		p.refine_frame = refined
+		p.displayed_request = request
+		hooks.commit(s, refined, p.grid.lines, p.grid.marks)
+	end)
+	if not ok then
+		p.awaiting = nil
+		return hooks.fallback(s, tostring(err))
+	end
+	arm_read(s, p, waiting, hooks)
+end
+
+local function repaint_selection(s, p, hooks)
+	local source, target = p.refined_source, s.frame
+	if
+		not source
+		or source.worker ~= s.backend.refiner
+		or (source.worker and (source.worker.closed or source.worker.exited))
+	then
+		return false
+	end
+	-- Coalesce drag events while keeping the last sharp frame on screen.
+	if p.refine_job then
+		return true
+	end
+	local request = vim.deepcopy(source.request)
+	request.reuse, request.selections = true, nil
+	if s.selection and s.selection.first then
+		request.selections = selection.rectangles(target, s.selection.pages, s.selection.first, s.selection.last)
+		local width = 0
+		for _, part in ipairs(request.parts) do
+			width = math.max(width, part.offset + part.width)
+		end
+		local motion_width = 0
+		for _, part in ipairs(p.last_request.parts) do
+			motion_width = math.max(motion_width, part.offset + part.width)
+		end
+		local sx, sy = target.cw * width / motion_width, target.ch * request.height / p.last_request.height
+		for _, rect in ipairs(request.selections) do
+			rect.x1, rect.x2 = rect.x1 * sx, rect.x2 * sx
+			rect.y1, rect.y2 = rect.y1 * sy, rect.y2 * sy
+		end
+	end
+	local files = refinement_files(s, p, request)
+	local version, generation = s.selection and s.selection.version, p.generation
+	local job
+	job = s.backend:refine(request, function(result)
+		if p.refine_job == job then
+			p.refine_job = nil
+		end
+		local current = hooks.active(s)
+			and not p.hidden
+			and p.generation == generation
+			and p.refined_source == source
+			and s.frame == target
+			and target.key == table.concat({ s.geometry_key, s.x, s.y }, ":")
+			and target.surface == table.concat({ s.win, s.width, s.height, s.cw, s.ch, s.columns }, ":")
+		if not current or result.code ~= 0 then
+			for _, file in ipairs(files) do
+				uv.fs_unlink(file)
+			end
+			if current and result.code ~= 0 then
+				p.refined_source = nil
+			end
+			if hooks.active(s) then
+				hooks.schedule(s, true)
+			end
+			return
+		end
+		-- Publish completed snapshots during a continuous drag. The read ACK
+		-- schedules the newest range; discarding every older range would starve
+		-- feedback when mouse events arrive faster than a full raster transfer.
+		local frame = vim.tbl_extend("force", {}, target, { selection_version = version })
+		publish_refined(s, p, hooks, frame, request, files, source.scale, result)
+	end)
+	p.refine_job = job
+	return true
 end
 
 local function schedule_refinement(s, p, config, hooks)
@@ -189,12 +297,8 @@ local function schedule_refinement(s, p, config, hooks)
 					return
 				end
 				local request, scale = refinement_request(p.last_request, config.surface_refine_scale or 1)
-				p.refine_sequence = (p.refine_sequence or 0) + 1
-				local files = {}
-				for index, part in ipairs(request.parts) do
-					part.file = s.backend.dir .. "/refine-" .. p.refine_sequence .. "-" .. index .. ".rgba"
-					files[#files + 1] = part.file
-				end
+				local files = refinement_files(s, p, request)
+				request.selection_cache = tostring(p.generation) .. ":" .. p.refine_sequence
 				local job
 				job = s.backend:refine(request, function(result)
 					if p.refine_job == job then
@@ -218,34 +322,8 @@ local function schedule_refinement(s, p, config, hooks)
 						end
 						return
 					end
-					-- Native motion retains its two reusable outputs. The independent
-					-- refinement files live only until the terminal has read them.
-					local waiting = { ids = {}, files = files, keep = vim.tbl_extend("force", {}, p.files) }
-					for _, file in ipairs(files) do
-						p.files[file] = true
-					end
-					p.awaiting = waiting
-					local refined = vim.tbl_extend("force", {}, target)
-					refined.refining, refined.refined, refined.compose_ms = false, true, result.render_ms
-					refined.refinement_scale = scale
-					local ok, err = pcall(graphics.synchronized, function()
-						for index, part in ipairs(request.parts) do
-							local image = p.entries[index].image
-							graphics.replace(image, part.file, image.cols, image.rows, {
-								format = 32,
-								quiet = 0,
-								crop = { width = part.width, height = request.height },
-							})
-							waiting.ids[image.id] = true
-						end
-						p.refine_frame = refined
-						hooks.commit(s, refined, p.grid.lines, p.grid.marks)
-					end)
-					if not ok then
-						p.awaiting = nil
-						return hooks.fallback(s, tostring(err))
-					end
-					arm_read(s, p, waiting, hooks)
+					p.refined_source = { request = request, scale = scale, worker = s.backend.refiner }
+					publish_refined(s, p, hooks, target, request, files, scale, result)
 				end)
 				p.refine_job = job
 			end)
@@ -291,6 +369,7 @@ function M.hide(s, closing)
 		graphics.delete(entry.image)
 	end
 	p.entries, p.retiring, p.surface, p.grid, p.last_request = {}, {}, nil, nil, nil
+	p.displayed_request = nil
 end
 
 function M.stats(s)
@@ -360,8 +439,8 @@ function M.paint(s, config, hooks)
 	local surface = table.concat({ s.win, s.width, s.height, s.cw, s.ch, s.columns }, ":")
 	local key = table.concat({ s.geometry_key, s.x, s.y }, ":")
 	local selection_version = s.selection and s.selection.version
-	-- A read acknowledgment often arrives before the pacing deadline. An
-	-- unchanged target needs neither a composition nor another wakeup timer.
+	-- A selection change must keep the settled PDF's pixel density. Only
+	-- actual viewport movement returns to the smaller motion renderer.
 	if
 		not p.animation
 		and s.frame
@@ -369,11 +448,14 @@ function M.paint(s, config, hooks)
 		and s.frame.x == s.x
 		and s.frame.y == s.y
 		and p.surface == surface
-		and s.frame.selection_version == selection_version
 	then
-		s.input_ns = nil
-		schedule_refinement(s, p, config, hooks)
-		return
+		if s.frame.selection_version == selection_version then
+			s.input_ns = nil
+			schedule_refinement(s, p, config, hooks)
+			return
+		elseif s.frame.refined and repaint_selection(s, p, hooks) then
+			return
+		end
 	end
 	cancel_refinement(s)
 	local now = uv.hrtime()
@@ -559,6 +641,7 @@ function M.paint(s, config, hooks)
 				end
 			end
 			p.surface, p.grid, p.last_request = surface, grid, request
+			p.displayed_request = request
 			hooks.status(s, false)
 			local latest_input = s.input_ns
 			s.input_ns = input_ns

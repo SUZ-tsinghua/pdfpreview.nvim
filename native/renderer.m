@@ -266,10 +266,22 @@ static NSUInteger gpuCacheBytes(void) {
     return total;
 }
 
+// Keep one untinted, final-resolution viewport for selection-only updates.
+// It shares the refinement's 64 MiB pixel limit and is released on motion
+// cancellation (worker exit) or replaced by the next refined viewport.
+static NSArray<NSData *> *selectionPixels;
+static NSArray *selectionParts, *selectionPages;
+static NSString *selectionKey;
+static NSUInteger selectionHeight, selectionBytes;
+
 // Draw vectors directly at the final viewport pixel scale. Only visible
 // output pixels are allocated, even when the full page is much larger.
 static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
     NSArray *pages = request[@"pages"], *parts = request[@"parts"];
+    NSString *key = request[@"selection_cache"];
+    BOOL reuse = [request[@"reuse"] isEqual:@YES];
+    if (key && (![key isKindOfClass:[NSString class]] || key.length == 0 || key.length > 512))
+        return @"Invalid selection cache key";
     if (!validSelections(request[@"selections"])) return @"Invalid selection rectangles";
     if (!numberInRange(request[@"height"],1,8192,YES) ||
         ![pages isKindOfClass:[NSArray class]] || pages.count < 1 || pages.count > 16 ||
@@ -294,9 +306,34 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
             !numberInRange(page[@"width"],0.001,1e9,NO) || !numberInRange(page[@"height"],0.001,1e9,NO))
             return @"Invalid refinement page";
     }
-    for (NSDictionary *part in parts) {
+    if (reuse) {
+        if (!key || ![selectionKey isEqual:key] || height != selectionHeight ||
+            parts.count != selectionParts.count || ![pages isEqual:selectionPages])
+            return @"Refined selection cache is unavailable";
+        for (NSUInteger i = 0; i < parts.count; i++) {
+            if (![parts[i][@"width"] isEqual:selectionParts[i][@"width"]] ||
+                ![parts[i][@"offset"] isEqual:selectionParts[i][@"offset"]])
+                return @"Refined selection geometry changed";
+        }
+    } else {
+        selectionPixels = nil;
+        selectionParts = selectionPages = nil;
+        selectionKey = nil;
+        selectionBytes = 0;
+    }
+    NSMutableArray<NSData *> *clean = [NSMutableArray array];
+    for (NSUInteger index = 0; index < parts.count; index++) {
+        NSDictionary *part = parts[index];
         NSUInteger width = [part[@"width"] unsignedIntegerValue];
-        NSData *pixels = mapOutput(part[@"file"], width * height * 4);
+        NSUInteger bytes = width * height * 4;
+        NSData *output = mapOutput(part[@"file"], bytes);
+        if (!output) return @"Could not allocate refinement output";
+        if (reuse) {
+            memcpy((void *)output.bytes, selectionPixels[index].bytes, bytes);
+            applySelections(output,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
+            continue;
+        }
+        NSData *pixels = key ? allocateTransientPixels(bytes) : output;
         if (!pixels) return @"Could not allocate refinement output";
         CGContextRef context = CGBitmapContextCreate((void *)pixels.bytes, width, height, 8, width * 4,
             rasterColorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
@@ -332,7 +369,19 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
             CGContextRestoreGState(context);
         }
         CGContextRelease(context);
-        applySelections(pixels,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
+        if (key) {
+            [clean addObject:pixels];
+            memcpy((void *)output.bytes, pixels.bytes, bytes);
+        }
+        applySelections(output,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
+    }
+    if (key && !reuse) {
+        selectionPixels = clean;
+        selectionParts = parts;
+        selectionPages = pages;
+        selectionKey = key;
+        selectionHeight = height;
+        selectionBytes = total * 4;
     }
     return nil;
 }
@@ -546,7 +595,7 @@ static NSArray *pageGeometry(CGPDFDocumentRef document) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-            puts("pdfpreview-native protocol 2");
+            puts("pdfpreview-native protocol 3");
             return 0;
         }
         if (argc != 2) {
@@ -577,7 +626,7 @@ int main(int argc, const char *argv[]) {
                 CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
                 if ([request[@"action"] isEqual:@"info"]) {
                     NSArray *pages = pageGeometry(document);
-                    if (pages) reply(@{ @"id": request[@"id"], @"protocol": @2, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes) });
+                    if (pages) reply(@{ @"id": request[@"id"], @"protocol": @3, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes), @"selection_cache_bytes": @(selectionBytes) });
                     else reply(@{ @"id": request[@"id"], @"error": @"Invalid or excessive PDF page geometry" });
                     continue;
                 }
@@ -589,12 +638,13 @@ int main(int argc, const char *argv[]) {
                 if (error) reply(@{ @"id": request[@"id"], @"error": error });
                 else reply(@{ @"id": request[@"id"], @"render_ms": @((CFAbsoluteTimeGetCurrent() - start) * 1000),
                               @"cache_hits": @(cacheHits - hits), @"cache_misses": @(cacheMisses - misses),
-                              @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes) });
+                              @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes), @"selection_cache_bytes": @(selectionBytes) });
             }
         }
         free(line);
         outputTargets = nil;
         pixelCache = nil;
+        selectionPixels = nil;
         CGColorSpaceRelease(rasterColorSpace);
         CGPDFDocumentRelease(document);
     }

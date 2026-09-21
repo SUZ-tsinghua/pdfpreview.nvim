@@ -46,6 +46,7 @@ class Worker:
         if 'error' not in result:
             assert result.get('cache_bytes', 0) + result.get('gpu_cache_bytes', 0) <= 128 * 1024 * 1024
             assert result.get('output_cache_bytes', 0) <= 64 * 1024 * 1024
+            assert result.get('selection_cache_bytes', 0) <= 64 * 1024 * 1024
         return result
 
     def checked(self, **values):
@@ -72,7 +73,7 @@ def pixels(path, width, height):
 def check_rasters(directory, pdf):
     with Worker(pdf) as worker:
         info = worker.checked(action='info')
-        assert info['protocol'] == 2
+        assert info['protocol'] == 3
         assert [(p['width'], p['height']) for p in info['pages']] == [(320, 480), (480, 320)] * 2
         raw, png, crop = [directory / name for name in ['raw.rgba', 'page.png', 'crop.rgba']]
         for page in range(1, 5):
@@ -203,6 +204,51 @@ def check_metal(directory, pdf):
     print('PASS: Metal affine pixels, stripes, file identity, source/output cache bounds and recovery')
 
 
+
+def check_refined_selection(directory, pdf):
+    edge_pdf = directory / 'selection-edge.pdf'
+    fixture(edge_pdf, b'0 0 0 rg 200 0 200 600 re f\n')
+    with Worker(edge_pdf) as worker:
+        height, widths = 407, [271, 389]
+        parts = [dict(width=w, offset=sum(widths[:i]), file=str(directory / f'highlight-{i}.rgba'))
+                 for i, w in enumerate(widths)]
+        request = dict(action='refine', height=height, parts=parts,
+                       pages=[dict(page=1, left=-12000+333.25, top=-17000, width=24000, height=36000)],
+                       selection_cache='sharp')
+        reply = worker.checked(**request)
+        assert reply['selection_cache_bytes'] == sum(widths) * height * 4
+        def read():
+            return np.concatenate([pixels(Path(part['file']), part['width'], height).copy() for part in parts], axis=1)
+        base = read()
+        row = base[100, :, 0]
+        assert np.sum((row > 0) & (row < 255)) <= 2 and np.all(row[:332] == 255) and np.all(row[335:] == 0)
+        # Move/clear without re-rasterizing; compare every output pixel, not
+        # just dimensions or the final settled frame.
+        for left, right in [(15, 70), (100, 420), (252, 278), (0, 660), (660, 660), (15, 70)]:
+            masks = [dict(x1=left, x2=right, y1=40, y2=90)] if left != right else []
+            worker.checked(**request, reuse=True, selections=masks)
+            expected = base.copy()
+            if masks:
+                region = expected[40:90, left:right, :3].astype(np.uint16)
+                expected[40:90, left:right, :3] = (region * 165 + np.array([64, 140, 255], dtype=np.uint16) * 90 + 127) // 255
+            assert np.array_equal(read(), expected), 'Highlight-only redraw keeps every high-resolution pixel; tint never accumulates'
+        worker.checked(**request, reuse=True, selections=[])
+        assert np.array_equal(read(), base), 'Clear restores the exact original raster'
+        before = [Path(p['file']).read_bytes() for p in parts]
+        for invalid in [dict(selection_cache='missing'), dict(height=height+1),
+                        dict(parts=[dict(parts[0], offset=1), parts[1]]),
+                        dict(pages=[dict(request['pages'][0], left=0)])]:
+            assert 'error' in worker.request(**dict(request, reuse=True, **invalid))
+            assert before == [Path(p['file']).read_bytes() for p in parts], 'Cache validation precedes file writes'
+        worker.checked(**dict(request, selection_cache='new'))
+        assert 'error' in worker.request(**request, reuse=True)
+        assert worker.checked(action='info')['selection_cache_bytes'] == sum(widths) * height * 4
+        uncached = dict(request)
+        del uncached['selection_cache']
+        assert worker.checked(**uncached)['selection_cache_bytes'] == 0, 'Uncached refinement releases its retained base'
+    print('PASS: full-resolution drag pixels, striped masks, exact clearing, bounded clean cache, stale keys and geometry validation')
+
+
 with tempfile.TemporaryDirectory(prefix='pdfpreview-refine-pixels-') as directory:
     directory = Path(directory)
     pdf = directory / 'rotated vectors.pdf'
@@ -214,10 +260,11 @@ with tempfile.TemporaryDirectory(prefix='pdfpreview-refine-pixels-') as director
     check_rasters(directory, pdf)
     check_metal(directory, pdf)
     check_selections(directory, pdf)
+    check_refined_selection(directory, pdf)
     worker = Worker(pdf)
     try:
         info = worker.request(action='info')
-        assert info['protocol'] == 2, 'Worker and client share one protocol'
+        assert info['protocol'] == 3, 'Worker and client share one protocol'
         unused = directory / 'invalid.rgba'
         valid_page = dict(page=1, width=1200, height=1800, left=-119, top=-213)
         for invalid in [dict(height=-1, pages=[], parts=[]),

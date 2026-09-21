@@ -501,6 +501,68 @@ do
 		"A refined idle frame does no more work"
 	)
 
+	-- A drag must reuse the final-resolution base, including rapid updates
+	-- and clearing while the previous highlight is still in flight.
+	local sharp = s.frame
+	s.selection.version = 2
+	paint()
+	local highlighted = assert(table.remove(refine, 1))
+	assert(
+		#compose == 0 and highlighted.request.reuse and s.frame == sharp,
+		"Selection keeps the sharp frame while repainting"
+	)
+	assert(
+		highlighted.request.selection_cache == fresh.request.selection_cache,
+		"Drag reuses the clean refined viewport"
+	)
+	assert(highlighted.request.height == fresh.request.height, "Dragging preserves refined pixel density")
+	for index, rect in ipairs(highlighted.request.selections) do
+		assert(
+			vim.deep_equal(rect, fresh.request.selections[index]),
+			"Cached highlight uses the same supersampled coordinates"
+		)
+	end
+	s.selection.version = 3
+	s.selection.first, s.selection.last = nil, nil
+	paint()
+	assert(
+		#compose == 0 and #refine == 0 and not highlighted.cancelled,
+		"Fast drags coalesce without killing the clean pixel cache"
+	)
+	finish(highlighted)
+	assert(
+		s.frame.refined and s.frame.selection_version == 2 and s.surface_state.awaiting,
+		"Continuous dragging publishes sharp snapshots instead of starving feedback"
+	)
+	ack_all()
+	no_files(highlighted)
+	paint()
+	local clear = assert(table.remove(refine, 1))
+	assert(clear.request.reuse and not clear.request.selections, "Clearing restores cached unselected pixels")
+	finish(clear)
+	assert(
+		s.frame.refined and s.frame.selection_version == 3 and #compose == 0,
+		"Selection clearing never downgrades to motion pixels"
+	)
+	ack_all()
+	no_files(clear)
+	-- Resize invalidates the cache even if selection work completes late.
+	s.selection.version = 4
+	paint()
+	local stale = assert(table.remove(refine, 1))
+	s.width = 299
+	paint()
+	assert(stale.cancelled and #compose == 1, "Viewport changes cancel the old highlight cache")
+	finish(stale)
+	no_files(stale)
+	finish(table.remove(compose, 1))
+	ack_all()
+	assert(not s.frame.refined, "Resized geometry requires a new vector base")
+	s.width = 300
+	paint()
+	finish(table.remove(compose, 1))
+	ack_all()
+
 	-- Expired timers queued on the main loop must not start after a newer input.
 	s.y = 2
 	paint()

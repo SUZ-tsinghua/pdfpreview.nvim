@@ -178,7 +178,7 @@ for _, renderer in ipairs(renderers) do
 	end
 	local function feedback()
 		if s.renderer == "surface" then
-			local request = s.surface_state.last_request
+			local request = s.surface_state.displayed_request
 			return s.frame.selection_version == s.selection.version
 				and request
 				and request.selections
@@ -187,6 +187,7 @@ for _, renderer in ipairs(renderers) do
 		return #s.selection.overlays > 0
 	end
 	settle()
+	local initial_compositions = s.surface_state and s.surface_state.sequence
 	local function mouse(kind, n, index)
 		local page = assert(s.frame.layout.pages[n])
 		local words = s.selection.pages[n] or loaded
@@ -229,12 +230,19 @@ for _, renderer in ipairs(renderers) do
 	)
 	if s.renderer == "surface" then
 		assert(s.frame.refined and s.frame.refinement_scale == 2, "Select on main's 2x refined surface")
+		assert(
+			s.surface_state.sequence == initial_compositions and s.surface_state.displayed_request.reuse,
+			"Real native selection updates reuse sharp pixels without any lower-resolution composition"
+		)
 		local page = s.frame.layout.pages[1]
 		local left = text.left(s.frame, page)
 		local first, last = loaded.words[1], loaded.words[2]
-		local expected = math.ceil((left + last.x2 * page.width) * s.cw)
-			- math.floor((left + first.x1 * page.width) * s.cw)
-		local rect = s.surface_state.last_request.selections[1]
+		local displayed = s.surface_state.displayed_request
+		local part = displayed.parts[#displayed.parts]
+		local density = (part.offset + part.width) / s.frame.width
+		local expected = math.ceil((left + last.x2 * page.width) * density)
+			- math.floor((left + first.x1 * page.width) * density)
+		local rect = displayed.selections[1]
 		assert(math.ceil(rect.x2) - math.floor(rect.x1) == expected, "Selection uses displayed viewport pixels")
 		assert(not overlay, "Surface feedback needs no cursor-positioned images")
 	end
@@ -363,7 +371,7 @@ for _, renderer in ipairs(renderers) do
 	assert(not s.selection.first and #s.selection.overlays == 0, "Escape removes selection and images")
 	if s.renderer == "surface" then
 		settle()
-		assert(not s.surface_state.last_request.selections, "Clearing a selection restores untinted pixels")
+		assert(not s.surface_state.displayed_request.selections, "Clearing a selection restores untinted pixels")
 	end
 	local before = vim.fn.getreg('"')
 	viewer.copy("a")
@@ -464,6 +472,7 @@ local ok, err = pcall(function()
 			request("nvim_exec_lua", "return vim.fn.mode() == 'n' and not s.selection.dragging", {}),
 			"PDF dragging stays in normal mode and receives button release"
 		)
+
 		request("nvim_input", "<Esc>")
 		wait(function()
 			return request("nvim_exec_lua", "return s.selection.start == nil", {})

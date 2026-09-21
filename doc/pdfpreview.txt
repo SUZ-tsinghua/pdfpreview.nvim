@@ -171,13 +171,16 @@ twice the terminal pixel density on each axis, preserving the same cell grid.
 The effective multiplier decreases to stay within 16,777,216 output pixels
 and 8192 pixels per dimension. PdfStats reports refinement_scale, cell_width
 and cell_height. max_dimension limits cached pages, not direct PDF redraws.
-New motion cancels outdated refinement work. The terminal receives raster
-images; embedded bitmaps retain their source detail limits.
+New motion cancels outdated refinement work. Dragging and clearing selections
+reuse the clean final-resolution viewport without downgrading to motion pixels.
+The terminal receives raster images; embedded bitmaps retain their source
+detail limits.
 Discrete wheel input is interpolated; native fractional input is not received.
 
 Native CPU/GPU source caches share a 128 MiB limit. Two reusable output
 generations have a separate 64 MiB mapping limit. One refinement viewport
-brings temporary output files to at most 128 MiB. Process memory includes
+brings temporary output files to at most 128 MiB. A separate clean refinement
+cache for selections retains at most 64 MiB. Process memory includes
 additional document, framework and staging allocations.
 
 Surface motion output is limited to 8,388,608 pixels, 8192 per dimension,

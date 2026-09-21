@@ -984,6 +984,10 @@ function M.stats()
 				and not s.backend.native.exited
 				and s.backend.native.output_cache_bytes
 			or 0,
+		native_selection_cache_bytes = s.backend.refiner
+				and not s.backend.refiner.exited
+				and s.backend.refiner.selection_cache_bytes
+			or 0,
 		native_gpu_cache_bytes = s.backend.native and not s.backend.native.exited and s.backend.native.gpu_cache_bytes
 			or 0,
 		image_cache_bytes = s.backend.opts.image_cache_bytes,

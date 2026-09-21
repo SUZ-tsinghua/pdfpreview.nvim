@@ -1,5 +1,5 @@
 local M = {}
-M.protocol = 2
+M.protocol = 3
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
 
 function M.executable(opts)
@@ -63,6 +63,7 @@ function M.new(path, opts, on_exit)
 			self.cache_bytes = result.cache_bytes or 0
 			self.gpu_cache_bytes = result.gpu_cache_bytes or 0
 			self.output_cache_bytes = result.output_cache_bytes or 0
+			self.selection_cache_bytes = result.selection_cache_bytes or 0
 			if job.request.action == "info" and result.protocol ~= M.protocol then
 				result.error = "Native helper protocol mismatch; run make native in the plugin directory"
 			end
