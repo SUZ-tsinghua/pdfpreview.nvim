@@ -510,6 +510,52 @@ function M.resize(image, cols, rows)
 	return M.resize_many({ { image = image, width = cols, height = rows } })
 end
 
+-- Translucent screen placements work without Kitty relative-placement support.
+-- The selection controller removes them before the reader's grid changes.
+function M.selection_rectangle(rect, origin, cw, ch)
+	local x, y = math.floor(rect.x1 * cw), math.floor(rect.y1 * ch)
+	local width = math.max(1, math.ceil(rect.x2 * cw) - x)
+	local height = math.max(1, math.ceil(rect.y2 * ch) - y)
+	local col, row = math.floor(x / cw), math.floor(y / ch)
+	local lease = image_ids.acquire()
+	local image = { id = lease.id, lease = lease, width = width, height = height, tiles = {} }
+	local ok, err = pcall(function()
+		-- Inline transport avoids mutable files and read-ack races while dragging.
+		local remaining, first = width * height, true
+		while remaining > 0 do
+			local count = math.min(768, remaining)
+			remaining = remaining - count
+			local options = first and { a = "t", f = 32, s = width, v = height, i = image.id } or {}
+			options.m = remaining > 0 and 1 or 0
+			M.send(options, vim.base64.encode(string.rep(string.char(64, 140, 255, 90), count)))
+			first = false
+		end
+		-- Preserve the cursor known to Neovim, including when transmission fails.
+		M.raw("\27" .. "7")
+		local placed, placement_error = pcall(function()
+			M.raw(("\27[%d;%dH"):format(origin.row + row, origin.col + col))
+			M.send({
+				a = "p",
+				i = image.id,
+				p = 1,
+				X = math.floor(x - col * cw),
+				Y = math.floor(y - row * ch),
+				C = 1,
+				z = 1,
+			})
+		end)
+		M.raw("\27" .. "8")
+		if not placed then
+			error(placement_error, 0)
+		end
+	end)
+	if not ok then
+		pcall(M.delete, image)
+		error(err, 0)
+	end
+	return image
+end
+
 function M.delete(image)
 	if not image or image.deleted then
 		return

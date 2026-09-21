@@ -1,15 +1,15 @@
 # pdfpreview.nvim
 
-A PDF reader inside Neovim with continuous scrolling, arbitrary zoom and horizontal panning. It uses the Kitty graphics protocol for display, a persistent Core Graphics helper on macOS, and Poppler on other systems. No image plugin is required.
+A PDF reader inside Neovim with continuous scrolling, arbitrary zoom, horizontal panning and text selection. It uses the Kitty graphics protocol for display, a persistent Core Graphics helper on macOS, and Poppler on other systems. No image plugin is required.
 
 On supported Macs, a Metal compositor moves cached pages at fractional pixel positions. After scrolling or zooming stops, the visible area is redrawn directly from the PDF for sharper text and vector detail. The terminal receives raster images in both cases.
 
 ## Requirements
 
 - Neovim 0.11+ in a local terminal. The Metal compositor requires Neovim 0.12+.
-- Poppler: `pdfinfo` and `pdftoppm` on `PATH` (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu).
+- Poppler: `pdfinfo`, `pdftoppm` and `pdftotext` on `PATH` (`brew install poppler` on macOS, `sudo apt install poppler-utils` on Debian/Ubuntu). Text selection uses `pdftotext` with either rasterizer.
 - A terminal supporting Kitty graphics, Unicode image placeholders and local file transmission. Otty on macOS has been tested; Kitty and Ghostty are protocol targets awaiting visual verification.
-- `termguicolors` enabled; `mouse = "a"` for wheel input.
+- `termguicolors` enabled; `mouse = "a"` for scrolling and text selection.
 - Optional on macOS: Apple's Command Line Tools to build the native helper. Metal composition requires a unified-memory Metal device.
 
 SSH, tmux, Zellij and graphical Neovim clients are not supported.
@@ -50,6 +50,7 @@ An unpublished or development checkout can live anywhere. Replace `"SUZ-tsinghua
 :PdfOpen /path/to/document.pdf
 :PdfZoom 137.5
 :PdfPage 12
+:PdfCopy
 :PdfReload
 :PdfStats
 :PdfClose
@@ -59,6 +60,10 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 
 | Input | Action |
 | --- | --- |
+| Left click / drag | Select a word / range of PDF text |
+| `y` / `"ay` | Copy selected text to the unnamed / named register |
+| Ctrl-C / `:PdfCopy` | Copy selected text to the system clipboard |
+| Escape | Clear text selection |
 | Wheel / trackpad scroll | Scroll across page boundaries |
 | `j` / `k`, Up / Down | Scroll one row; counts supported |
 | `h` / `l`, Left / Right | Pan horizontally; counts supported |
@@ -72,6 +77,10 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 | `q` | Close the PDF buffer |
 
 Zoom is relative to fit width: 100% fits the widest page, and the default range is 10%–800%. Zoom and resize preserve the approximate reading position at the viewport center.
+
+Drag from a word to select through another word, then press `y` to yank or Ctrl-C to copy. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. Popups temporarily hide the highlight while retaining the selection.
+
+Text is extracted locally from the PDF's text layer on demand. Selection snaps to words at terminal-cell mouse precision and preserves extracted line breaks and reading order; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. If `pdftotext` is missing, rendering still works and `:checkhealth pdfpreview` reports the missing dependency. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
 
 True pinch-to-zoom is not supported. The plugin receives discrete wheel events; the surface renderer interpolates their movement over 40 ms by default.
 
@@ -122,7 +131,8 @@ Oversized viewports, compositor errors or missing terminal acknowledgments fall 
 ## Limitations
 
 - One viewport per document buffer; multiple splits do not have independent positions.
-- No PDF text selection, search, links, annotations, outline or SyncTeX.
+- Text selection is word-based; no character-level selection or OCR.
+- No PDF search, links, annotations, outline or SyncTeX.
 - No password-protected documents.
 - Tile and Unicode paths can look softer at high zoom because their raster size is capped.
 - Terminal compatibility and physical input still require manual visual checks.
@@ -148,6 +158,7 @@ make test-native PYTHON=.venv/bin/python
 | `core.lua` | Cell detection, layout, tile coverage, image IDs and output recovery |
 | `reader.lua` | Poppler readers, page boundaries, zoom, dimension changes and cleanup |
 | `surface.lua` | Acknowledgments, cancellation, stale results and bounded file lifetimes |
+| `selection.lua` | Text extraction, drag/yank mappings, cross-page copying, font changes, refinement and cleanup |
 | `native.lua` | Actual native workers, idle refinement, protocol validation and fallback |
 | `ui.lua` | Embedded Neovim image transport, nested waits and stable grids |
 | `pixels.py` | Rotation/cropping, Metal pixels, cache eviction and vector detail |

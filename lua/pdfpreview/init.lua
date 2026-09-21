@@ -6,6 +6,7 @@ local terminal = require("pdfpreview.terminal")
 local backend = require("pdfpreview.backend")
 local tiles = require("pdfpreview.tiles")
 local surface = require("pdfpreview.surface")
+local selection = require("pdfpreview.selection")
 local ns = api.nvim_create_namespace("pdfpreview")
 local states = {}
 M.defaults = {
@@ -18,6 +19,7 @@ M.defaults = {
 	progressive_zoom = true,
 	pdfinfo = "pdfinfo",
 	pdftoppm = "pdftoppm",
+	pdftotext = "pdftotext",
 	scroll_step = 1,
 	scroll_animation_ms = 40,
 	surface_refine_ms = 100,
@@ -329,7 +331,7 @@ end
 local function status(s, waiting)
 	local page = layout.at(s.layout, s.y + s.height / 2)
 	local text = string.format(
-		" PDF  %d/%d  ·  %.1f%%%% fit-width%s  ·  +/− zoom  0 fit  q close",
+		" PDF  %d/%d  ·  %.1f%%%% fit-width%s  ·  drag select  y copy  +/− zoom  q close",
 		page,
 		#s.pages,
 		s.zoom * 100,
@@ -408,6 +410,11 @@ local function frame_ready(s, entries, preview)
 	end
 	return {
 		key = key,
+		layout = s.layout,
+		width = s.width,
+		height = s.height,
+		cw = s.cw,
+		ch = s.ch,
 		surface = surface,
 		keys = keys,
 		zoom = s.zoom,
@@ -428,6 +435,7 @@ local function commit(s, frame, lines, marks)
 		end
 	end
 	local function publish()
+		s.selection:hide()
 		graphics.resize_many(frame.resizes or {})
 		local view_y
 		if s.renderer ~= "surface" then
@@ -462,6 +470,7 @@ local function commit(s, frame, lines, marks)
 	frame.input_to_submit_ms = s.input_ns and (frame.submitted_ns - s.input_ns) / 1e6 or nil
 	s.input_ns = nil
 	s.frame = frame
+	s.selection:resolve()
 	s.loading_surface = nil
 	-- The displayed images must survive cache eviction while their replacements run.
 	s.backend:set_retained(frame.keys)
@@ -818,6 +827,20 @@ local function current()
 	return s
 end
 
+function M.copy(register)
+	local s = current()
+	if s then
+		return s.selection:copy(register)
+	end
+end
+
+function M.clear_selection()
+	local s = current()
+	if s then
+		s.selection:clear()
+	end
+end
+
 function M.scroll(dy, dx)
 	local s = current()
 	if not s or not s.pages then
@@ -976,6 +999,23 @@ local function mappings(s)
 			vim.keymap.set("n", key, fn, { buffer = s.buf, silent = true, desc = desc })
 		end
 	end
+	for key, kind in pairs({ ["<LeftMouse>"] = "press", ["<LeftDrag>"] = "drag", ["<LeftRelease>"] = "release" }) do
+		for _, prefix in ipairs({ "", "2-", "3-", "4-" }) do
+			local lhs = key:gsub("<", "<" .. prefix)
+			vim.keymap.set("n", lhs, function()
+				local mouse = vim.fn.getmousepos()
+				s.selection:mouse(kind, mouse)
+				return mouse.winid == s.win and "" or lhs
+			end, { buffer = s.buf, silent = true, expr = true, desc = "Select PDF text" })
+		end
+	end
+	map("y", function()
+		M.copy(vim.v.register)
+	end, "Yank selected PDF text")
+	map({ "<C-c>", "<D-c>" }, function()
+		M.copy("+")
+	end, "Copy PDF text to clipboard")
+	map("<Esc>", M.clear_selection, "Clear PDF text selection")
 	map({ "j", "<Down>" }, function()
 		M.scroll(vim.v.count1)
 	end, "Scroll PDF down")
@@ -1033,6 +1073,8 @@ local function mappings(s)
 end
 
 local function hide(s)
+	s.selection:hide()
+	s.selection.dragging = false
 	surface.hide(s)
 	s.frame, s.loading_surface, s.pending, s.input_ns = nil, nil, nil, nil
 	s.zoom, s.zoom_target, s.zoom_timer = s.zoom_target or s.zoom, nil, nil
@@ -1049,6 +1091,7 @@ local function dispose(s)
 		return
 	end
 	surface.hide(s, true)
+	s.selection:close()
 	s.closed = true
 	restore(s)
 	s.backend:close()
@@ -1102,6 +1145,7 @@ function M.open(file, buf)
 		renderer = (vim.env.TERM_PROGRAM or ""):lower():find("otty", 1, true) and "viewport" or "unicode"
 	end
 	local s = { buf = buf, path = file, zoom = 1, x = 0, y = 0, renderer = renderer }
+	s.selection = selection.new(s, M.config, active)
 	states[buf] = s
 	s.backend = backend.new(file, M.config, function()
 		schedule(s, true)
@@ -1208,6 +1252,9 @@ function M.setup(opts)
 		M.goto_page(o.args)
 	end, { nargs = 1, force = true })
 	api.nvim_create_user_command("PdfClose", M.close, { force = true })
+	api.nvim_create_user_command("PdfCopy", function()
+		M.copy("+")
+	end, { force = true })
 	api.nvim_create_user_command("PdfReload", M.reload, { force = true })
 	api.nvim_create_user_command("PdfStats", function()
 		local stats = M.stats()
@@ -1232,6 +1279,8 @@ function M.setup(opts)
 		group = group,
 		callback = function()
 			for _, s in pairs(states) do
+				s.selection:hide()
+				s.selection:schedule()
 				schedule(s)
 			end
 		end,
@@ -1249,8 +1298,21 @@ function M.setup(opts)
 					-- Font/display changes can leave the row and column counts intact.
 					-- Unchanged metrics need no redraw or idle rendering work.
 					if s.cw ~= cw or s.ch ~= ch then
+						s.selection:hide()
 						schedule(s)
 					end
+				end
+			end
+		end,
+	})
+	api.nvim_create_autocmd({ "CmdlineEnter", "CmdlineLeave" }, {
+		group = group,
+		callback = function(event)
+			for _, s in pairs(states) do
+				if event.event == "CmdlineEnter" then
+					s.selection:hide()
+				else
+					s.selection:schedule()
 				end
 			end
 		end,
@@ -1287,6 +1349,7 @@ function M.setup(opts)
 		group = group,
 		callback = function()
 			for _, s in pairs(states) do
+				s.selection:close()
 				s.backend:close()
 			end
 		end,

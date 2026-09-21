@@ -465,6 +465,11 @@ function M.paint(s, config, hooks)
 	local generation, input_ns = p.generation, s.input_ns
 	local frame = {
 		key = key,
+		layout = s.layout,
+		width = s.width,
+		height = s.height,
+		cw = s.cw,
+		ch = s.ch,
 		surface = surface,
 		zoom = s.zoom,
 		x = x,

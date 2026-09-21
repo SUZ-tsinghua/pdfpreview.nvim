@@ -3,9 +3,10 @@
 INTRODUCTION                                             *pdfpreview*
 
 pdfpreview.nvim displays local PDFs inside Neovim using Kitty graphics.
-It requires Neovim 0.11+, Poppler (pdfinfo and pdftoppm), termguicolors,
+It requires Neovim 0.11+, Poppler (pdfinfo, pdftoppm and pdftotext), termguicolors,
 and a terminal supporting Unicode image placeholders and local files.
-Use :set mouse=a for wheel input. SSH and multiplexers are not supported.
+Use :set mouse=a for scrolling and selection. SSH and multiplexers are not
+supported.
 
 On macOS, run `make native` in the plugin directory to build the Core Graphics
 helper. Rebuild after updating native source. The automatic rasterizer falls
@@ -22,6 +23,9 @@ COMMANDS                                                 *pdfpreview-commands*
         window. Decimal percentages are accepted. Default range: 10-800.
 :PdfPage {number}                                         *:PdfPage*
         Jump to the given page (starting at 1).
+:PdfCopy                                                  *:PdfCopy*
+        Copy selected PDF text to the system clipboard (+ register).
+        If no clipboard provider is available, keep it in the unnamed register.
 :PdfReload                                               *:PdfReload*
         Reload the current document from disk.
 :PdfStats                                                *:PdfStats*
@@ -36,6 +40,10 @@ Run :checkhealth pdfpreview to check dependencies and terminal identification.
 
 MAPPINGS                                                 *pdfpreview-mappings*
 
+Left click/drag   Select a word or range of PDF text.
+y / "ay           Copy selected text to the unnamed / named register.
+Ctrl-C / Cmd-C    Copy to the system clipboard (when forwarded by the terminal).
+Escape            Clear text selection.
 j/k, Up/Down       Scroll one row; counts supported.
 h/l, Left/Right    Pan horizontally; counts supported.
 Ctrl-D / Ctrl-U    Scroll most of the viewport (also PageDown / PageUp).
@@ -49,6 +57,27 @@ q                 Close.
 Wheel events scroll continuously across page boundaries. Ctrl-wheel zooms
 when forwarded by the terminal. True pinch-to-zoom is not supported.
 
+TEXT SELECTION                                           *pdfpreview-selection*
+
+Drag from a word to select through another word, then press y to yank or
+Ctrl-C to copy. Hold the button and scroll to extend across pages. Selection
+stays attached to PDF coordinates through zooming, scrolling and resizing.
+Blue highlights are temporarily hidden while a floating window or command
+line is open; copying and the logical selection remain available.
+
+Poppler's pdftotext reads the local PDF text layer lazily, independently of
+the rasterizer. Copying waits for any pending extraction. No OCR is performed:
+scanned pages without a text layer cannot be selected. Selection snaps to
+words at terminal-cell mouse precision. Extracted line breaks and reading
+order are retained; complex columns or encodings may affect that order.
+
+Missing pdftotext disables selection without preventing PDF rendering.
+The executable can be configured with the pdftotext option below.
+
+Lua API: require("pdfpreview").copy(register) copies the current selection;
+the default register is "+". A ready selection returns the copied string,
+otherwise copying completes asynchronously. clear_selection() removes it.
+
 OPTIONS                                                  *pdfpreview-options*
 
 Call require("pdfpreview").setup({ ... }) once during initialization.
@@ -60,6 +89,7 @@ rasterizer = "auto"        "auto", "native" (macOS) or "poppler".
 native_renderer = nil      Optional absolute path to the compiled helper.
 pdfinfo = "pdfinfo"        Poppler metadata executable.
 pdftoppm = "pdftoppm"      Poppler rendering executable.
+pdftotext = "pdftotext"    Poppler text extraction executable.
 scroll_step = 1            Rows per wheel event.
 scroll_animation_ms = 40   Surface movement interpolation (0-200 ms).
 surface_refine_ms = 100    Idle detail redraw delay (0-2000 ms).
@@ -161,8 +191,9 @@ Hiding a reader releases terminal images and stops refinement; closing stops
 all workers and removes temporary files after they exit. PDFs remain local.
 PDF buffers disable Snacks scroll animation to keep image rows aligned.
 
-Only one viewport is maintained per document buffer. PDF text selection,
-search, links, annotations, outlines, SyncTeX and passwords are not supported.
+Only one viewport is maintained per document buffer. Character-level text
+selection, OCR, search, links, annotations, outlines, SyncTeX and passwords
+are not supported.
 
 See README.md for installation, Snacks configuration and development tests.
 

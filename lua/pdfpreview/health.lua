@@ -8,6 +8,11 @@ function M.check()
 	else
 		health.error("Neovim 0.11+ is required")
 	end
+	if vim.fn.executable(config.pdftotext) == 1 then
+		health.ok("PDF text selection: " .. vim.fn.exepath(config.pdftotext))
+	else
+		health.warn("pdftotext was not found; PDF text selection is unavailable", "Install Poppler")
+	end
 	for _, name in ipairs({ "pdfinfo", "pdftoppm" }) do
 		local executable = vim.fn.exepath(config[name])
 		if executable ~= "" then
