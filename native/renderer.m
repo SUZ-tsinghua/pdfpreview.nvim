@@ -223,6 +223,38 @@ static BOOL numberInRange(id value, double minimum, double maximum, BOOL integer
         [value doubleValue] >= minimum && [value doubleValue] <= maximum &&
         (!integer || [value doubleValue] == [value longLongValue]);
 }
+static BOOL validSelections(id selections) {
+    if (!selections) return YES;
+    if (![selections isKindOfClass:[NSArray class]] || [selections count] > 8192) return NO;
+    for (id rect in selections) {
+        if (![rect isKindOfClass:[NSDictionary class]]) return NO;
+        for (NSString *key in @[@"x1", @"y1", @"x2", @"y2"])
+            if (!numberInRange(rect[key],-1e9,1e9,NO)) return NO;
+        if ([rect[@"x2"] doubleValue] < [rect[@"x1"] doubleValue] ||
+            [rect[@"y2"] doubleValue] < [rect[@"y1"] doubleValue]) return NO;
+    }
+    return YES;
+}
+
+// Tint only the selected pixels after rendering. Both motion and refinement
+// use the same viewport coordinates; no terminal cursor or image z-order is involved.
+static void applySelections(NSData *pixels, NSInteger width, NSInteger height, double offset, NSArray *selections) {
+    unsigned char *data = (unsigned char *)pixels.bytes;
+    for (NSDictionary *rect in selections) {
+        NSInteger left = MAX(0, (NSInteger)floor([rect[@"x1"] doubleValue] - offset));
+        NSInteger right = MIN(width, (NSInteger)ceil([rect[@"x2"] doubleValue] - offset));
+        NSInteger top = MAX(0, (NSInteger)floor([rect[@"y1"] doubleValue]));
+        NSInteger bottom = MIN(height, (NSInteger)ceil([rect[@"y2"] doubleValue]));
+        for (NSInteger y = top; y < bottom; y++) {
+            for (NSInteger x = left; x < right; x++) {
+                unsigned char *pixel = data + (y * width + x) * 4;
+                pixel[0] = (pixel[0] * 165 + 64 * 90 + 127) / 255;
+                pixel[1] = (pixel[1] * 165 + 140 * 90 + 127) / 255;
+                pixel[2] = (pixel[2] * 165 + 255 * 90 + 127) / 255;
+            }
+        }
+    }
+}
 static NSUInteger pixelCacheBytes(void) {
     NSUInteger total = 0;
     for (PixelTile *tile in pixelCache.allValues) total += tile.pixels.length;
@@ -238,6 +270,7 @@ static NSUInteger gpuCacheBytes(void) {
 // output pixels are allocated, even when the full page is much larger.
 static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
     NSArray *pages = request[@"pages"], *parts = request[@"parts"];
+    if (!validSelections(request[@"selections"])) return @"Invalid selection rectangles";
     if (!numberInRange(request[@"height"],1,8192,YES) ||
         ![pages isKindOfClass:[NSArray class]] || pages.count < 1 || pages.count > 16 ||
         ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
@@ -299,6 +332,7 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
             CGContextRestoreGState(context);
         }
         CGContextRelease(context);
+        applySelections(pixels,width,height,[part[@"offset"] doubleValue],request[@"selections"]);
     }
     return nil;
 }
@@ -375,6 +409,7 @@ static CompositionTarget *outputTarget(NSString *file, NSUInteger bytes, NSSet *
 static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     // Validate the entire request before allocating files or encoding GPU work.
     NSArray *pages = request[@"pages"], *parts = request[@"parts"];
+    if (!validSelections(request[@"selections"])) return @"Invalid selection rectangles";
     if (!numberInRange(request[@"height"], 1, 8192, YES) ||
         ![pages isKindOfClass:[NSArray class]] || pages.count < 1 || pages.count > 16 ||
         ![parts isKindOfClass:[NSArray class]] || parts.count < 1 || parts.count > 64)
@@ -482,6 +517,9 @@ static NSString *compose(CGPDFDocumentRef document, NSDictionary *request) {
     [command commit];
     [command waitUntilCompleted];
     if (command.status==MTLCommandBufferStatusError) return command.error.localizedDescription;
+    for (NSDictionary *part in parts)
+        applySelections(outputTargets[part[@"file"]].pixels,[part[@"width"] integerValue],height,
+                        [part[@"offset"] doubleValue],request[@"selections"]);
     return nil;
 }
 
@@ -508,7 +546,7 @@ static NSArray *pageGeometry(CGPDFDocumentRef document) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-            puts("pdfpreview-native protocol 1");
+            puts("pdfpreview-native protocol 2");
             return 0;
         }
         if (argc != 2) {
@@ -539,7 +577,7 @@ int main(int argc, const char *argv[]) {
                 CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
                 if ([request[@"action"] isEqual:@"info"]) {
                     NSArray *pages = pageGeometry(document);
-                    if (pages) reply(@{ @"id": request[@"id"], @"protocol": @1, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes) });
+                    if (pages) reply(@{ @"id": request[@"id"], @"protocol": @2, @"pages": pages, @"surface": @(surfaceAvailable()), @"cache_bytes": @(pixelCacheBytes()), @"gpu_cache_bytes": @(gpuCacheBytes()), @"output_cache_bytes": @(outputBytes) });
                     else reply(@{ @"id": request[@"id"], @"error": @"Invalid or excessive PDF page geometry" });
                     continue;
                 }

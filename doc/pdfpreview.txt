@@ -62,7 +62,9 @@ TEXT SELECTION                                           *pdfpreview-selection*
 Drag from a word to select through another word, then press y to yank or
 Ctrl-C to copy. Hold the button and scroll to extend across pages. Selection
 stays attached to PDF coordinates through zooming, scrolling and resizing.
-Blue highlights are temporarily hidden while a floating window or command
+The surface renderer composites blue highlights into the PDF pixels, so
+they follow scrolling, refinement and sidebar resizing. Other renderers
+temporarily hide highlights while an overlapping floating window or command
 line is open; copying and the logical selection remain available.
 
 Poppler's pdftotext reads the local PDF text layer lazily, independently of

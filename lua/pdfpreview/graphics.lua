@@ -530,24 +530,17 @@ function M.selection_rectangle(rect, origin, cw, ch)
 			M.send(options, vim.base64.encode(string.rep(string.char(64, 140, 255, 90), count)))
 			first = false
 		end
-		-- Preserve the cursor known to Neovim, including when transmission fails.
-		M.raw("\27" .. "7")
-		local placed, placement_error = pcall(function()
-			M.raw(("\27[%d;%dH"):format(origin.row + row, origin.col + col))
-			M.send({
-				a = "p",
-				i = image.id,
-				p = 1,
-				X = math.floor(x - col * cw),
-				Y = math.floor(y - row * ch),
-				C = 1,
-				z = 1,
-			})
-		end)
-		M.raw("\27" .. "8")
-		if not placed then
-			error(placement_error, 0)
-		end
+		-- Keep positioning and placement in one UI event. A TUI redraw between
+		-- separate sends can move the cursor into another window before a=p.
+		M.raw("\27" .. "7" .. ("\27[%d;%dH"):format(origin.row + row, origin.col + col) .. encode({
+			a = "p",
+			i = image.id,
+			p = 1,
+			X = math.floor(x - col * cw),
+			Y = math.floor(y - row * ch),
+			C = 1,
+			z = 1,
+		}) .. "\27" .. "8")
 	end)
 	if not ok then
 		pcall(M.delete, image)

@@ -1,5 +1,5 @@
 local M = {}
-M.protocol = 1
+M.protocol = 2
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
 
 function M.executable(opts)

@@ -1,5 +1,6 @@
 local M = {}
 local graphics = require("pdfpreview.graphics")
+local selection = require("pdfpreview.selection")
 local uv = vim.uv
 
 local function state(s)
@@ -117,6 +118,10 @@ local function refinement_request(source, scale)
 		page.left, page.width = page.left * sx, page.width * sx
 		page.top, page.height = page.top * sy, page.height * sy
 	end
+	for _, rect in ipairs(request.selections or {}) do
+		rect.x1, rect.x2 = rect.x1 * sx, rect.x2 * sx
+		rect.y1, rect.y2 = rect.y1 * sy, rect.y2 * sy
+	end
 	return request, math.min(sx, sy)
 end
 
@@ -148,6 +153,7 @@ local function schedule_refinement(s, p, config, hooks)
 			and target.zoom == s.zoom
 			and target.x == s.x
 			and target.y == s.y
+			and target.selection_version == (s.selection and s.selection.version)
 			and not s.zoom_target
 			and not s.pending
 			and not p.animation
@@ -353,6 +359,7 @@ function M.paint(s, config, hooks)
 	end
 	local surface = table.concat({ s.win, s.width, s.height, s.cw, s.ch, s.columns }, ":")
 	local key = table.concat({ s.geometry_key, s.x, s.y }, ":")
+	local selection_version = s.selection and s.selection.version
 	-- A read acknowledgment often arrives before the pacing deadline. An
 	-- unchanged target needs neither a composition nor another wakeup timer.
 	if
@@ -362,6 +369,7 @@ function M.paint(s, config, hooks)
 		and s.frame.x == s.x
 		and s.frame.y == s.y
 		and p.surface == surface
+		and s.frame.selection_version == selection_version
 	then
 		s.input_ns = nil
 		schedule_refinement(s, p, config, hooks)
@@ -405,7 +413,14 @@ function M.paint(s, config, hooks)
 		end
 	end
 	key = table.concat({ s.geometry_key, x, y }, ":")
-	if s.frame and s.frame.key == key and s.frame.x == x and s.frame.y == y and p.surface == surface then
+	if
+		s.frame
+		and s.frame.key == key
+		and s.frame.x == x
+		and s.frame.y == y
+		and p.surface == surface
+		and s.frame.selection_version == selection_version
+	then
 		s.input_ns = nil
 		return
 	end
@@ -465,6 +480,7 @@ function M.paint(s, config, hooks)
 	local generation, input_ns = p.generation, s.input_ns
 	local frame = {
 		key = key,
+		selection_version = selection_version,
 		layout = s.layout,
 		width = s.width,
 		height = s.height,
@@ -479,6 +495,13 @@ function M.paint(s, config, hooks)
 		resizes = {},
 		refining = (config.surface_refine_ms or 0) > 0 and not p.refine_error or false,
 	}
+	if s.selection and s.selection.first then
+		request.selections = selection.rectangles(frame, s.selection.pages, s.selection.first, s.selection.last)
+		for _, rect in ipairs(request.selections) do
+			rect.x1, rect.x2 = rect.x1 * s.cw, rect.x2 * s.cw
+			rect.y1, rect.y2 = rect.y1 * s.ch, rect.y2 * s.ch
+		end
+	end
 	p.job = s.backend:compose(request, function(result)
 		p.running, p.job, p.render_x, p.render_y = false, nil, nil, nil
 		if not hooks.active(s) or p.generation ~= generation then
@@ -571,7 +594,12 @@ function M.paint(s, config, hooks)
 			return hooks.fallback(s, tostring(err))
 		end
 		arm_read(s, p, waiting, hooks)
-		if frame.zoom ~= s.zoom or frame.x ~= s.x or frame.y ~= s.y then
+		if
+			frame.zoom ~= s.zoom
+			or frame.x ~= s.x
+			or frame.y ~= s.y
+			or frame.selection_version ~= (s.selection and s.selection.version)
+		then
 			if p.animation then
 				later(16 - (uv.hrtime() - p.last_started) / 1e6)
 			else

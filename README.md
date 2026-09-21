@@ -78,7 +78,7 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 
 Zoom is relative to fit width: 100% fits the widest page, and the default range is 10%–800%. Zoom and resize preserve the approximate reading position at the viewport center.
 
-Drag from a word to select through another word, then press `y` to yank or Ctrl-C to copy. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. Popups temporarily hide the highlight while retaining the selection.
+Drag from a word to select through another word, then press `y` to yank or Ctrl-C to copy. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. The surface renderer includes the highlight in the PDF pixels, including during refinement and sidebar resizing. Other renderers temporarily hide highlights when a popup overlaps the PDF, while retaining the selection.
 
 Text is extracted locally from the PDF's text layer on demand. Selection snaps to words at terminal-cell mouse precision and preserves extracted line breaks and reading order; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. If `pdftotext` is missing, rendering still works and `:checkhealth pdfpreview` reports the missing dependency. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
 

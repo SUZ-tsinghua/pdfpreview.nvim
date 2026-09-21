@@ -72,7 +72,7 @@ def pixels(path, width, height):
 def check_rasters(directory, pdf):
     with Worker(pdf) as worker:
         info = worker.checked(action='info')
-        assert info['protocol'] == 1
+        assert info['protocol'] == 2
         assert [(p['width'], p['height']) for p in info['pages']] == [(320, 480), (480, 320)] * 2
         raw, png, crop = [directory / name for name in ['raw.rgba', 'page.png', 'crop.rgba']]
         for page in range(1, 5):
@@ -97,6 +97,42 @@ def check_rasters(directory, pdf):
         assert 'error' in worker.request(page=-1, file=str(raw))
         assert 'pages' in worker.checked(action='info'), 'Invalid requests do not corrupt the protocol'
     print('PASS: rotated CropBox, RGBA/PNG channels, Poppler agreement and source-tile seams')
+
+
+def check_selections(directory, pdf):
+    with Worker(pdf) as worker:
+        actions = ['refine']
+        if worker.checked(action='info')['surface']:
+            actions.append('compose')
+        width, height = 320, 240
+        page = dict(page=2, px=512, py=384, left=-12.5, top=-20.25, width=480, height=320)
+        output = directory / 'selected.rgba'
+        stripes = [directory / f'selected-{i}.rgba' for i in range(2)]
+        rectangles = [dict(x1=-5.5, y1=20.3, x2=143.2, y2=40.1),
+                      dict(x1=180.6, y1=230.8, x2=600, y2=500)]
+        for action in actions:
+            request = dict(action=action, height=height, pages=[page],
+                           parts=[dict(width=width, offset=0, file=str(output))])
+            worker.checked(**request)
+            original = pixels(output, width, height).copy()
+            worker.checked(**request, selections=rectangles)
+            selected = pixels(output, width, height).copy()
+            expected = original.copy()
+            for ys, xs in [(slice(20, 41), slice(0, 144)), (slice(230, 240), slice(180, 320))]:
+                rgb = expected[ys, xs, :3].astype(np.uint32)
+                expected[ys, xs, :3] = (rgb * 165 + np.array([64, 140, 255]) * 90 + 127) // 255
+            assert np.array_equal(selected, expected), f'{action}: only selected pixels change'
+            worker.checked(**dict(request, parts=[dict(width=117, offset=0, file=str(stripes[0])),
+                                                  dict(width=203, offset=117, file=str(stripes[1]))]),
+                           selections=rectangles)
+            joined = np.concatenate([pixels(path, w, height) for path, w in zip(stripes, [117, 203])], axis=1)
+            assert np.abs(joined.astype(np.int16) - selected.astype(np.int16)).max() <= 1, action
+            worker.checked(**request, selections=[])
+            assert np.array_equal(pixels(output, width, height), original), 'Clearing restores the PDF'
+            for invalid in [{}, [dict(x1=10, y1=0, x2=0, y2=1)], [dict(x1='bad')]]:
+                assert 'error' in worker.request(**request, selections=invalid)
+                assert np.array_equal(pixels(output, width, height), original), 'Invalid masks do not modify output'
+    print('PASS: selection tint pixels, clipping, stripe offsets, clear and invalid masks in motion/refinement')
 
 
 def check_metal(directory, pdf):
@@ -177,10 +213,11 @@ with tempfile.TemporaryDirectory(prefix='pdfpreview-refine-pixels-') as director
     fixture(pdf, content, crop=True)
     check_rasters(directory, pdf)
     check_metal(directory, pdf)
+    check_selections(directory, pdf)
     worker = Worker(pdf)
     try:
         info = worker.request(action='info')
-        assert info['protocol'] == 1, 'Worker and client share one protocol'
+        assert info['protocol'] == 2, 'Worker and client share one protocol'
         unused = directory / 'invalid.rgba'
         valid_page = dict(page=1, width=1200, height=1800, left=-119, top=-213)
         for invalid in [dict(height=-1, pages=[], parts=[]),

@@ -103,6 +103,27 @@ do
 		#timers == idle_timers and #packets == idle_packets and #queued == 0,
 		"An early acknowledgment of the current target needs no pacing timer or additional work"
 	)
+	s.selection = {
+		version = 1,
+		first = { page = 1, index = 1 },
+		last = { page = 1, index = 1 },
+		pages = { { words = { { x1 = 0.1, y1 = 0.05, x2 = 0.3, y2 = 0.1, line = 1 } } } },
+	}
+	paint()
+	assert(#queued == 1, "Changing only a selection repaints the surface")
+	s.selection.version = 2
+	s.selection.first, s.selection.last = nil, nil
+	local selected = finish()
+	assert(#selected.selections == 1 and selected.selections[1].x1 == 1.6, "Selection masks use viewport pixels")
+	acknowledge(id)
+	paint()
+	local cleared = finish()
+	assert(
+		not cleared.selections and s.frame.selection_version == 2,
+		"Clearing during composition cannot strand a stale selection"
+	)
+	assert(s.surface_state.entries[1].image.id == id, "Highlight changes keep the existing placeholder placement")
+	acknowledge(id)
 	s.y = 0.5
 	paint()
 	finish()
@@ -328,6 +349,12 @@ do
 			width = 300,
 			pages = { { top = 0, width = 300, height = 400, pixel_width = 300, pixel_height = 800 } },
 		},
+		selection = {
+			version = 1,
+			first = { page = 1, index = 1 },
+			last = { page = 1, index = 1 },
+			pages = { { words = { { x1 = 0.1, y1 = 0.001, x2 = 0.3, y2 = 0.005, line = 1 } } } },
+		},
 	}
 	local function queue(list, request, callback)
 		local item = { request = request, callback = callback }
@@ -414,6 +441,11 @@ do
 	local old = wait_refine()
 	assert(vim.deep_equal(motion, s.surface_state.last_request), "Refinement preserves the reusable motion request")
 	assert(old.request.height == motion.height * 2, "Idle refinement doubles the raster height")
+	for index, rect in ipairs(old.request.selections) do
+		for _, axis in ipairs({ "x1", "y1", "x2", "y2" }) do
+			assert(rect[axis] == motion.selections[index][axis] * 2, "Refinement scales selection masks with the PDF")
+		end
+	end
 	for index, part in ipairs(old.request.parts) do
 		assert(part.width == motion.parts[index].width * 2 and part.offset == motion.parts[index].offset * 2)
 	end

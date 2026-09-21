@@ -1145,7 +1145,7 @@ function M.open(file, buf)
 		renderer = (vim.env.TERM_PROGRAM or ""):lower():find("otty", 1, true) and "viewport" or "unicode"
 	end
 	local s = { buf = buf, path = file, zoom = 1, x = 0, y = 0, renderer = renderer }
-	s.selection = selection.new(s, M.config, active)
+	s.selection = selection.new(s, M.config, active, schedule)
 	states[buf] = s
 	s.backend = backend.new(file, M.config, function()
 		schedule(s, true)

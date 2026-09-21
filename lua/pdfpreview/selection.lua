@@ -3,6 +3,35 @@ local text = require("pdfpreview.text")
 local graphics = require("pdfpreview.graphics")
 local layout = require("pdfpreview.layout")
 
+local function obscured(s, origin)
+	local top, left = origin.row - 1, origin.col - 1
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+		local config = vim.api.nvim_win_get_config(win)
+		if win ~= s.win and config.relative ~= "" and not config.hide then
+			local pos = vim.api.nvim_win_get_position(win)
+			local width, height = config.width, config.height
+			local border = config.border or {}
+			local function edge(index)
+				local value = border[index]
+				if type(value) == "table" then
+					value = value[1]
+				end
+				return value and value ~= "" and 1 or 0
+			end
+			width, height = width + edge(4) + edge(8), height + edge(2) + edge(6)
+			if
+				pos[1] < top + s.frame.height
+				and pos[1] + height > top
+				and pos[2] < left + s.frame.width
+				and pos[2] + width > left
+			then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function M.rectangles(frame, pages, first, last)
 	local rects = {}
 	for n = first.page, last.page do
@@ -38,8 +67,14 @@ function M.rectangles(frame, pages, first, last)
 	return rects
 end
 
-function M.new(s, config, active)
-	local self = { pages = {}, requested = {}, overlays = {}, generation = 0 }
+function M.new(s, config, active, repaint)
+	local self = { pages = {}, requested = {}, overlays = {}, generation = 0, version = 0 }
+	local function changed()
+		self.version = self.version + 1
+		if repaint and s.renderer == "surface" and active(s) then
+			repaint(s)
+		end
+	end
 	local function notice(value, level)
 		vim.notify("pdfpreview: " .. value, level or vim.log.levels.INFO)
 	end
@@ -56,22 +91,26 @@ function M.new(s, config, active)
 		self.pages, self.requested = {}, {}
 		self.start, self.finish, self.first, self.last = nil, nil, nil, nil
 		self.dragging, self.copy_pending, self.error = false, nil, nil
+		changed()
 	end
 	function self:redraw()
 		self.redraw_ticket = nil
 		if not active(s) or not s.frame or not self.first or vim.fn.getcmdtype() ~= "" then
 			return self:hide()
 		end
-		-- Positive-z graphics also cover Neovim floats. Keep the logical selection
-		-- while temporarily hiding feedback behind a popup.
-		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-			if vim.api.nvim_win_get_config(win).relative ~= "" then
-				return self:hide()
-			end
+		-- Surface selections are part of the PDF pixels, so they share its
+		-- positioning, clipping and lifetime even when terminal windows change.
+		if s.renderer == "surface" then
+			return self:hide()
 		end
 		vim.cmd.redraw()
 		local origin = vim.fn.screenpos(s.win, vim.fn.line("w0", s.win), 1)
 		if origin.row == 0 or origin.col == 0 then
+			return self:hide()
+		end
+		-- Only popups covering this viewport need protection from positive-z
+		-- images. Sidebar UIs such as Snacks Explorer also use floating windows.
+		if obscured(s, origin) then
 			return self:hide()
 		end
 		local frame, previous = s.frame, self.overlays
@@ -131,7 +170,11 @@ function M.new(s, config, active)
 	function self:resolve()
 		local a = self.start and self.pages[self.start.page]
 		local b = self.finish and self.pages[self.finish.page]
-		self.first, self.last = text.range(a and text.hit(a, self.start, true), b and text.hit(b, self.finish))
+		local first, last = text.range(a and text.hit(a, self.start, true), b and text.hit(b, self.finish))
+		if not vim.deep_equal(first, self.first) or not vim.deep_equal(last, self.last) then
+			self.first, self.last = first, last
+			changed()
+		end
 		if self.first then
 			-- Only visible intermediate pages are needed for feedback. Copy loads
 			-- the remaining pages in the range through the same serialized worker.
@@ -166,6 +209,7 @@ function M.new(s, config, active)
 				return
 			end
 			self.pages[n] = page
+			changed()
 			if self.start and n == self.start.page and #page.words == 0 then
 				notice("This page has no selectable text (scanned PDFs need OCR).")
 				self.copy_pending = nil

@@ -169,11 +169,22 @@ for _, renderer in ipairs(renderers) do
 				and f.zoom == s.zoom
 				and f.x == s.x
 				and f.y == s.y
+				and (s.renderer ~= "surface" or f.selection_version == s.selection.version)
 				and not s.pending
 				and not s.zoom_target
 				and (not p or (not p.running and not p.awaiting))
 		end, "Selection reader settles: " .. renderer)
 		vim.cmd.redraw()
+	end
+	local function feedback()
+		if s.renderer == "surface" then
+			local request = s.surface_state.last_request
+			return s.frame.selection_version == s.selection.version
+				and request
+				and request.selections
+				and #request.selections > 0
+		end
+		return #s.selection.overlays > 0
 	end
 	settle()
 	local function mouse(kind, n, index)
@@ -196,9 +207,8 @@ for _, renderer in ipairs(renderers) do
 	wait(function()
 		return vim.fn.getreg("a") == "PDF PREVIEW"
 	end, "Pending drag and copy resolve after extraction")
-	wait(function()
-		return #s.selection.overlays > 0
-	end, "A visible selection gets translucent overlays")
+	settle()
+	wait(feedback, "A visible selection gets highlighted")
 	assert(not s.selection.dragging, "Releasing the button stops dragging")
 	assert(
 		vim.fn.getreg('"') == "PDF PREVIEW" and vim.fn.getreg("0") == "PDF PREVIEW",
@@ -224,15 +234,19 @@ for _, renderer in ipairs(renderers) do
 		local first, last = loaded.words[1], loaded.words[2]
 		local expected = math.ceil((left + last.x2 * page.width) * s.cw)
 			- math.floor((left + first.x1 * page.width) * s.cw)
-		assert(overlay.width == expected, "Highlights use displayed pixels, not the supersampled raster size")
+		local rect = s.surface_state.last_request.selections[1]
+		assert(math.ceil(rect.x2) - math.floor(rect.x1) == expected, "Selection uses displayed viewport pixels")
+		assert(not overlay, "Surface feedback needs no cursor-positioned images")
 	end
-	local above = false
+	local above, positioned = false, false
 	for _, packet in ipairs(packets) do
-		if packet:find("a=p", 1, true) and packet:find("i=" .. overlay.id .. ",", 1, true) then
+		if overlay and packet:find("a=p", 1, true) and packet:find("i=" .. overlay.id .. ",", 1, true) then
 			above = packet:find("z=1", 1, true) and not packet:find("P=", 1, true)
+			positioned = packet:match("^\27" .. "7\27%[%d+;%d+H\27_G") and packet:sub(-2) == "\27" .. "8"
 		end
 	end
-	assert(above, "Highlights appear above the PDF without requiring relative placements")
+	assert(not overlay or above, "Highlights appear above the PDF without requiring relative placements")
+	assert(not overlay or positioned, "Cursor positioning and placement cannot be split by a TUI redraw")
 	local float = api.nvim_open_win(
 		api.nvim_create_buf(false, true),
 		false,
@@ -243,9 +257,41 @@ for _, renderer in ipairs(renderers) do
 	end, "Floats hide positive-z selection graphics")
 	assert(viewer.copy("a") == "PDF PREVIEW", "A popup preserves the logical selection")
 	api.nvim_win_close(float, true)
-	wait(function()
-		return #s.selection.overlays > 0
-	end, "Closing a popup restores feedback")
+	wait(feedback, "Closing a popup restores feedback")
+
+	-- Snacks Explorer uses floats inside a separate sidebar split. They must
+	-- not suppress feedback in an unobstructed PDF window beside it.
+	vim.cmd("topleft 20vnew")
+	local sidebar = api.nvim_get_current_win()
+	api.nvim_set_current_win(s.win)
+	settle()
+	local sidebar_float = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
+		relative = "win",
+		win = sidebar,
+		row = 0,
+		col = 0,
+		width = 18,
+		height = 4,
+		border = "rounded",
+		style = "minimal",
+	})
+	s.selection:redraw()
+	assert(feedback(), "Sidebar floats do not hide PDF selections")
+	local origin = vim.fn.screenpos(s.win, vim.fn.line("w0", s.win), 1)
+	api.nvim_win_set_config(sidebar_float, {
+		relative = "editor",
+		row = origin.row,
+		col = origin.col - 3,
+		width = 1,
+		height = 4,
+	})
+	s.selection:redraw()
+	assert(#s.selection.overlays == 0, "A popup border overlapping the PDF also hides feedback")
+	api.nvim_win_close(sidebar_float, true)
+	api.nvim_win_close(sidebar, true)
+	viewer.goto_page(1)
+	settle()
+	wait(feedback, "Closing the sidebar restores the original selection geometry")
 
 	-- Main can change terminal pixel dimensions without changing its cell grid.
 	local old_overlays = s.selection.overlays
@@ -315,6 +361,10 @@ for _, renderer in ipairs(renderers) do
 	assert(viewer.copy("a") == value, "Returning retains the logical selection")
 	viewer.clear_selection()
 	assert(not s.selection.first and #s.selection.overlays == 0, "Escape removes selection and images")
+	if s.renderer == "surface" then
+		settle()
+		assert(not s.surface_state.last_request.selections, "Clearing a selection restores untinted pixels")
+	end
 	local before = vim.fn.getreg('"')
 	viewer.copy("a")
 	assert(vim.fn.getreg('"') == before, "Empty selection cannot overwrite a register")
