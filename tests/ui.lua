@@ -5,8 +5,18 @@ local stdin, stdout = uv.new_pipe(false), uv.new_pipe(false)
 local replies, serial, packets, grid_cells = {}, 0, 0, 0
 local unpacker = vim.mpack.Unpacker()
 local exited = false
+-- This RPC client handles graphics replies, not host-terminal color queries.
+-- Disable startup DSR probes before --cmd runs so an E1568 warning cannot
+-- enter the grid measurements when CI has no terminal environment variables.
+local environment = vim.fn.environ()
+environment.NVIM_NOTTYFAST = "1"
+local child_env = {}
+for name, value in pairs(environment) do
+	child_env[#child_env + 1] = name .. "=" .. value
+end
 local child = assert(uv.spawn(vim.v.progpath, {
 	args = { "--embed", "-u", "NONE", "-i", "NONE" },
+	env = child_env,
 	stdio = { stdin, stdout, nil },
 }, function()
 	exited = true
@@ -114,7 +124,7 @@ local ok, err = pcall(function()
 		{},
 	})
 	assert(packets - prior_packets == 3, "The UI receives each warm image without a benchmark redraw or query")
-	assert(grid_cells < 100, "Warm pixel movement preserves the placeholder grid")
+	assert(grid_cells < 100, ("Warm pixel movement preserves the placeholder grid (%d cells)"):format(grid_cells))
 	request("nvim_exec_lua", {
 		[[
     local t = surface_ui
