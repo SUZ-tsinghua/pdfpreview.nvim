@@ -1,0 +1,125 @@
+*pdfpreview.txt*  Continuous PDF reading in Neovim
+
+INTRODUCTION                                             *pdfpreview*
+
+pdfpreview.nvim displays local PDFs inside Neovim using Kitty graphics.
+It requires Neovim 0.11+, Poppler (pdfinfo and pdftoppm), termguicolors,
+and a terminal supporting Unicode image placeholders and local files.
+Use :set mouse=a for wheel input. SSH and multiplexers are not supported.
+
+On macOS, run `make native` in the plugin directory to build the Core Graphics
+helper. Rebuild after updating native source. The automatic rasterizer falls
+back to Poppler if the helper is unavailable, incompatible or fails.
+
+COMMANDS                                                 *pdfpreview-commands*
+
+:PdfOpen [file]                                           *:PdfOpen*
+        Open a PDF, or use the current file path when omitted. Paths with
+        spaces do not need quotes. setup({ auto_open = true }) also handles
+        :edit document.pdf. Avoid registering another PDF BufReadCmd handler.
+:PdfZoom {percent}                                        *:PdfZoom*
+        Set zoom relative to fit width. 100 fits the widest page to the window.
+        Decimal percentages are accepted. Default range: 10-800.
+:PdfPage {number}                                         *:PdfPage*
+        Jump to the given page (starting at 1).
+:PdfReload                                               *:PdfReload*
+        Reload the current document from disk.
+:PdfStats                                                *:PdfStats*
+        Report render paths, target/displayed zoom, cache usage, active work,
+        refinement state and fallback reasons. Input timing ends at frame
+        submission; it excludes terminal transfer and physical display delay.
+:PdfClose                                                *:PdfClose*
+        Close the reader and release its workers and temporary files.
+
+Run :checkhealth pdfpreview to check dependencies and terminal identification.
+
+MAPPINGS                                                 *pdfpreview-mappings*
+
+j/k, Up/Down       Scroll one row; counts supported.
+h/l, Left/Right    Pan horizontally; counts supported.
+Ctrl-D / Ctrl-U    Scroll most of the viewport (also PageDown / PageUp).
++ / = / -         Zoom in / out.
+0                 Fit width.
+gg / G            Start / end of document.
+[count]G          Jump to a page.
+R                 Reload.
+q                 Close.
+
+Wheel events scroll continuously across page boundaries. Ctrl-wheel zooms
+when forwarded by the terminal. True pinch-to-zoom is not supported.
+
+OPTIONS                                                  *pdfpreview-options*
+
+Call require("pdfpreview").setup({ ... }) once during initialization.
+Defaults are shown below. Zoom values are factors, not percentages.
+
+auto_open = false          Register a PDF BufReadCmd handler.
+renderer = "auto"          "auto", "surface", "viewport" or "unicode".
+rasterizer = "auto"        "auto", "native" (macOS) or "poppler".
+native_renderer = nil      Optional absolute path to the compiled helper.
+pdfinfo = "pdfinfo"        Poppler metadata executable.
+pdftoppm = "pdftoppm"      Poppler rendering executable.
+scroll_step = 1            Rows per wheel event.
+scroll_animation_ms = 40   Surface movement interpolation (0-200 ms).
+surface_refine_ms = 100    Idle detail redraw delay (0-2000 ms).
+zoom_step = 1.15           Relative zoom multiplier for +/- and Ctrl-wheel.
+min_zoom = 0.1             Minimum zoom relative to fit width.
+max_zoom = 8               Maximum zoom relative to fit width.
+page_gap = 2               Gap between pages in terminal rows.
+max_dimension = 4096       Cached page edge limit in pixels.
+cell_width = nil          Override terminal cell width in pixels.
+cell_height = nil         Override terminal cell height in pixels.
+
+The following options apply to tile/Unicode rendering:
+
+cache_pages = 8            Soft limit on cached page/tile renders.
+image_cache_bytes = 16777216
+                          Soft budget for terminal images (16 MiB).
+jobs = 2                  Maximum concurrent raster jobs.
+prefetch_zoom = true       Predict source tiles for the next zoom level.
+progressive_zoom = true    Reproject complete cached coverage during zoom.
+compact_placeholders = false
+                          Experimental compact coordinate encoding. Leave
+                          false for reliable clipping; floats force false.
+
+Set scroll_animation_ms=0 for immediate movement with fewer intermediate
+frames. Set surface_refine_ms=0 to reduce idle work at the cost of high-zoom
+detail. Set prefetch_zoom=false to reduce speculative tile work.
+
+RENDERING                                                *pdfpreview-rendering*
+
+Automatic selection uses the surface compositor in Otty with Neovim 0.12+
+and a unified-memory Metal device. Other Otty sessions use viewport tiles;
+other terminals use whole-page Unicode placements. Otty has been visually
+tested on macOS. Kitty and Ghostty remain unverified protocol targets.
+
+Surface motion transforms cached pages at fractional pixel positions. After
+input settles, a separate worker redraws visible PDF text and paths at their
+final pixel scale. New motion cancels outdated refinement work. The terminal
+receives raster images; embedded bitmaps retain their source detail limits.
+Discrete wheel input is interpolated; native fractional input is not received.
+
+Native CPU/GPU source caches share a 128 MiB limit. Two reusable output
+generations have a separate 64 MiB mapping limit. One refinement viewport
+brings temporary output files to at most 96 MiB. Process memory includes
+additional document, framework and staging allocations.
+
+Surface output is limited to 8,388,608 pixels, 8192 pixels per dimension,
+256 terminal rows and 16 visible pages. Oversized views, compositor errors
+or missing terminal read acknowledgments fall back to viewport tiles.
+
+Viewport tiles reuse pixels across scrolling and nearby zoom levels.
+Unicode rendering caches whole pages. Visible/in-flight images may exceed
+soft cache limits. Large zoom levels can be softer because raster sizes are
+capped. Zoom and resize preserve the approximate viewport-center position.
+
+Hiding a reader releases terminal images and stops refinement; closing stops
+all workers and removes temporary files after they exit. PDFs remain local.
+PDF buffers disable Snacks scroll animation locally to keep image rows aligned.
+
+Only one viewport is maintained per document buffer. PDF text selection,
+search, links, annotations, outlines, SyncTeX and passwords are not supported.
+
+See README.md for installation, Snacks configuration and development tests.
+
+vim:tw=78:ts=8:ft=help:norl:
