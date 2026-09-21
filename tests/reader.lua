@@ -3,6 +3,7 @@ vim.opt.rtp:prepend(vim.fn.getcwd())
 vim.o.termguicolors = true
 local viewer = require("pdfpreview")
 local graphics = require("pdfpreview.graphics")
+local terminal = require("pdfpreview.terminal")
 local api = vim.api
 local packets = {}
 graphics.sink = function(data)
@@ -56,6 +57,50 @@ for _, renderer in ipairs({ "unicode", "viewport" }) do
 	end
 	assert(visible[1] and visible[2], "Both sides of a page boundary are rendered")
 
+	if renderer == "viewport" then
+		local original = terminal.cell_size
+		local cw, ch = 12, 21
+		terminal.cell_size = function()
+			return cw,
+				ch,
+				{ detected_width = cw, detected_height = ch, width_source = "ioctl", height_source = "ioctl" }
+		end
+		viewer.config.cell_width, viewer.config.cell_height = nil, nil
+		local layout = require("pdfpreview.layout")
+		local page, fraction = layout.at(s.layout, s.y + s.height / 2)
+		local old_key = s.geometry_key
+		api.nvim_exec_autocmds("FocusGained", {})
+		settle()
+		assert(
+			s.cw == cw and s.ch == ch and s.geometry_key ~= old_key,
+			"Focus detects pixel changes with an unchanged grid"
+		)
+		local next_page, next_fraction = layout.at(s.layout, s.y + s.height / 2)
+		assert(
+			page == next_page and math.abs(fraction - next_fraction) < 0.02,
+			"Automatic correction preserves the reading position"
+		)
+		local stats = viewer.stats()
+		assert(
+			stats.cell_width == cw and stats.detected_cell_height == ch and stats.cell_width_source == "ioctl",
+			"Stats expose effective and detected sizes"
+		)
+		local frame = s.frame
+		for _, event in ipairs({ "FocusGained", "UIEnter" }) do
+			api.nvim_exec_autocmds(event, {})
+			assert(
+				not s.pending and s.frame == frame,
+				"Unchanged dimensions schedule no rendering on focus/UI attachment"
+			)
+		end
+		cw = 13
+		api.nvim_exec_autocmds("VimResized", {})
+		settle()
+		assert(s.cw == cw, "Resize refreshes terminal dimensions")
+		terminal.cell_size = original
+		viewer.config.cell_width, viewer.config.cell_height = 10, 20
+	end
+
 	local text = api.nvim_create_buf(false, true)
 	local split = api.nvim_open_win(text, false, { split = "left", win = s.win, width = 20 })
 	viewer._paint(s)
@@ -101,4 +146,6 @@ for _, packet in ipairs(packets) do
 		assert(packet:find("U=1", 1, true) and packet:find("C=1", 1, true), "Placements remain text-bound")
 	end
 end
-print("PASS: portable readers, page boundaries, zoom, split resizing, cancellation and cleanup")
+print(
+	"PASS: portable readers, page boundaries, zoom, automatic dimension changes, idle focus, split resizing, cancellation and cleanup"
+)

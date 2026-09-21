@@ -221,6 +221,15 @@ with tempfile.TemporaryDirectory(prefix='pdfpreview-refine-pixels-') as director
         assert delta.max() <= 1 and delta.mean() < .001, (delta.max(), delta.mean())
         assert np.all(whole[:, :, 3] == 255), 'Paper and page-gap output remain opaque'
         assert tuple(whole[230, 300]) == (32, 36, 44, 255), 'Page gap preserves the viewport background'
+
+        # Idle output can exceed the motion budget, but never its own 64 MiB cap.
+        large = directory / 'high-density.rgba'
+        worker.checked(action='refine', height=2049, pages=[valid_page],
+                       parts=[dict(width=4096, offset=0, file=str(large))])
+        assert large.stat().st_size == 4096 * 2049 * 4
+        rejected = worker.request(action='refine', height=4097, pages=[valid_page],
+                                  parts=[dict(width=4096, offset=0, file=str(unused))])
+        assert 'error' in rejected and not unused.exists()
     finally:
         worker.close()
 

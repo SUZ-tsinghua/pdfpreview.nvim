@@ -63,7 +63,28 @@ function M.check()
 	elseif config.renderer == "surface" and not vim.api.nvim_ui_send then
 		health.info("Surface rendering needs Neovim 0.12; the reader will use viewport tiles")
 	end
-	local cw, ch = require("pdfpreview.graphics").cell_size()
-	health.info(string.format("Cell dimensions: %.2f x %.2f px (fallback: 9 x 18)", cw, ch))
+	local cw, ch, metrics = require("pdfpreview.terminal").cell_size(config)
+	health.info(
+		string.format(
+			"Cell dimensions: %.3f x %.3f px (width: %s; height: %s)",
+			cw,
+			ch,
+			metrics.width_source,
+			metrics.height_source
+		)
+	)
+	if metrics.detected_width then
+		health.info(
+			string.format("Detected cell dimensions: %.3f x %.3f px", metrics.detected_width, metrics.detected_height)
+		)
+	elseif metrics.width_source == "fallback" or metrics.height_source == "fallback" then
+		health.warn(
+			"Terminal pixel dimensions unavailable; automatic axes use the 9 x 18 px fallback",
+			"Set cell_width/cell_height if PDF proportions are incorrect"
+		)
+	end
+	health.info(
+		"Automatic sizes use integer terminal reports; exact fractional calibration requires manual overrides. See :help pdfpreview-cell-size"
+	)
 end
 return M

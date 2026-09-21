@@ -253,7 +253,7 @@ static NSString *refine(CGPDFDocumentRef document, NSDictionary *request) {
         [files addObject:part[@"file"]];
         total += [part[@"width"] unsignedLongLongValue] * height;
     }
-    if (total > 8 * 1024 * 1024) return @"Refinement exceeds the viewport pixel budget";
+    if (total > 16 * 1024 * 1024) return @"Refinement exceeds the viewport pixel budget";
     for (NSDictionary *page in pages) {
         if (![page isKindOfClass:[NSDictionary class]] ||
             !numberInRange(page[@"page"],1,CGPDFDocumentGetNumberOfPages(document),YES) ||

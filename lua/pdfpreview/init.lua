@@ -2,6 +2,7 @@ local M = {}
 local api = vim.api
 local layout = require("pdfpreview.layout")
 local graphics = require("pdfpreview.graphics")
+local terminal = require("pdfpreview.terminal")
 local backend = require("pdfpreview.backend")
 local tiles = require("pdfpreview.tiles")
 local surface = require("pdfpreview.surface")
@@ -20,6 +21,7 @@ M.defaults = {
 	scroll_step = 1,
 	scroll_animation_ms = 40,
 	surface_refine_ms = 100,
+	surface_refine_scale = 2,
 	zoom_step = 1.15,
 	min_zoom = 0.1,
 	max_zoom = 8,
@@ -305,8 +307,8 @@ local function schedule(s, immediate)
 end
 
 local function geometry(s)
-	local cw, ch = graphics.cell_size()
-	cw, ch = M.config.cell_width or cw, M.config.cell_height or ch
+	local cw, ch, metrics = terminal.cell_size(M.config)
+	s.cell_metrics = metrics
 	local info = vim.fn.getwininfo(s.win)[1]
 	local w, h = info.width - info.textoff, info.height
 	local key = table.concat({ w, h, cw, ch, s.zoom, vim.o.columns, s.renderer }, ":")
@@ -929,6 +931,7 @@ function M.stats()
 		end
 	end
 	local surface_count, surface_bytes = surface.stats(s)
+	local metrics = s.cell_metrics or {}
 	return {
 		renderer = s.renderer,
 		rasterizer = s.backend.rasterizer,
@@ -938,6 +941,13 @@ function M.stats()
 		surface_refined = s.renderer == "surface" and s.frame and s.frame.refined or false,
 		refinement_active = s.backend.refinement_active or false,
 		refinement_error = s.surface_state and s.surface_state.refine_error,
+		refinement_scale = s.frame and s.frame.refinement_scale,
+		cell_width = s.cw,
+		cell_height = s.ch,
+		cell_width_source = metrics.width_source,
+		cell_height_source = metrics.height_source,
+		detected_cell_width = metrics.detected_width,
+		detected_cell_height = metrics.detected_height,
 		input_to_submit_ms = s.frame and s.frame.input_to_submit_ms or nil,
 		active_jobs = s.backend.active,
 		cached_renders = vim.tbl_count(s.backend.entries),
@@ -1173,6 +1183,19 @@ function M.setup(opts)
 			and M.config.surface_refine_ms <= 2000,
 		"surface_refine_ms must be between 0 (disabled) and 2000"
 	)
+	assert(
+		type(M.config.surface_refine_scale) == "number"
+			and M.config.surface_refine_scale >= 1
+			and M.config.surface_refine_scale <= 2,
+		"surface_refine_scale must be between 1 and 2"
+	)
+	for _, name in ipairs({ "cell_width", "cell_height" }) do
+		local value = M.config[name]
+		assert(
+			value == nil or (type(value) == "number" and value > 0 and value < math.huge),
+			name .. " must be a finite positive number or nil (automatic)"
+		)
+	end
 	local group = api.nvim_create_augroup("pdfpreview", { clear = true })
 	api.nvim_set_hl(0, "PdfPreviewBackground", { bg = "#20242c", fg = "#a0a8b8" })
 	api.nvim_create_user_command("PdfOpen", function(o)
@@ -1210,6 +1233,25 @@ function M.setup(opts)
 		callback = function()
 			for _, s in pairs(states) do
 				schedule(s)
+			end
+		end,
+	})
+	api.nvim_create_autocmd({ "UIEnter", "FocusGained" }, {
+		group = group,
+		callback = function()
+			local cw, ch, metrics
+			for _, s in pairs(states) do
+				if active(s) then
+					if not cw then
+						cw, ch, metrics = terminal.cell_size(M.config)
+					end
+					s.cell_metrics = metrics
+					-- Font/display changes can leave the row and column counts intact.
+					-- Unchanged metrics need no redraw or idle rendering work.
+					if s.cw ~= cw or s.ch ~= ch then
+						schedule(s)
+					end
+				end
 			end
 		end,
 	})

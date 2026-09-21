@@ -18,16 +18,17 @@ COMMANDS                                                 *pdfpreview-commands*
         spaces do not need quotes. setup({ auto_open = true }) also handles
         :edit document.pdf. Avoid registering another PDF BufReadCmd handler.
 :PdfZoom {percent}                                        *:PdfZoom*
-        Set zoom relative to fit width. 100 fits the widest page to the window.
-        Decimal percentages are accepted. Default range: 10-800.
+        Set zoom relative to fit width. 100 fits the widest page to the
+        window. Decimal percentages are accepted. Default range: 10-800.
 :PdfPage {number}                                         *:PdfPage*
         Jump to the given page (starting at 1).
 :PdfReload                                               *:PdfReload*
         Reload the current document from disk.
 :PdfStats                                                *:PdfStats*
         Report render paths, target/displayed zoom, cache usage, active work,
-        refinement state and fallback reasons. Input timing ends at frame
-        submission; it excludes terminal transfer and physical display delay.
+        refinement state, cell dimensions and fallback reasons. Input timing
+        ends at frame submission; it excludes terminal transfer and physical
+        display delay.
 :PdfClose                                                *:PdfClose*
         Close the reader and release its workers and temporary files.
 
@@ -62,13 +63,14 @@ pdftoppm = "pdftoppm"      Poppler rendering executable.
 scroll_step = 1            Rows per wheel event.
 scroll_animation_ms = 40   Surface movement interpolation (0-200 ms).
 surface_refine_ms = 100    Idle detail redraw delay (0-2000 ms).
+surface_refine_scale = 2   Idle pixel density multiplier (1-2).
 zoom_step = 1.15           Relative zoom multiplier for +/- and Ctrl-wheel.
 min_zoom = 0.1             Minimum zoom relative to fit width.
 max_zoom = 8               Maximum zoom relative to fit width.
 page_gap = 2               Gap between pages in terminal rows.
 max_dimension = 4096       Cached page edge limit in pixels.
-cell_width = nil          Override terminal cell width in pixels.
-cell_height = nil         Override terminal cell height in pixels.
+cell_width = nil           Automatic width; a positive number overrides it.
+cell_height = nil          Automatic height; a positive number overrides it.
 
 The following options apply to tile/Unicode rendering:
 
@@ -83,10 +85,48 @@ compact_placeholders = false
                           false for reliable clipping; floats force false.
 
 Set scroll_animation_ms=0 for immediate movement with fewer intermediate
-frames. Set surface_refine_ms=0 to reduce idle work at the cost of high-zoom
-detail. Set prefetch_zoom=false to reduce speculative tile work.
+frames. Set surface_refine_scale=1 to reduce idle CPU, memory and transfer
+costs while keeping direct PDF redraws at native terminal pixel density.
+Set surface_refine_ms=0 to disable idle redraws, losing detail at high zoom.
+Set prefetch_zoom=false to reduce speculative tile work.
 
-RENDERING                                                *pdfpreview-rendering*
+CELL SIZE                                               *pdfpreview-cell-size*
+
+By default, terminal pixel and grid dimensions are read from the system with
+TIOCGWINSZ. The plugin tries stdout, stdin, then stderr, skipping descriptors
+without valid pixel dimensions. It divides total pixels by columns/rows to
+derive the cell size. If detection is unavailable, it uses 9 x 18 pixels.
+
+Detection is refreshed on resize, UI attachment, focus gain and drawing.
+Changed dimensions rebuild the layout while preserving the approximate
+viewport-center reading position. There is no background polling; gaining
+focus with unchanged effective dimensions does not trigger rendering.
+
+The terminal interface returns ONLY INTEGER pixel measurements. Otty can
+round cell dimensions before reporting totals. Division may produce a
+fractional average, but cannot recover precision already lost by the
+terminal. Automatic correction cannot guarantee exact proportions; accurate
+fractional calibration still requires manual cell_width/cell_height values.
+
+Both overrides accept finite positive numbers, including fractions, in
+physical pixels. Each axis independently takes precedence over detection.
+For a known square whose displayed width is W and height is H, keep the
+current cell height and use:
+>
+    new_cell_width = current_cell_width * W / H
+<
+For example, a width of 15 with a square measuring 520 x 500 suggests 15.6.
+Add cell_width = 15.6 to your plugin options and restart Neovim. This example
+is not an Otty default; it depends on your font, font size and display scale.
+Recalibrate after changing these settings. Remove either override (nil) to
+restore automatic detection for that axis.
+
+:checkhealth pdfpreview shows detected/effective dimensions and the source
+for each axis. :PdfStats reports cell_width/cell_height used by the reader,
+cell_width_source/cell_height_source (ioctl, manual or fallback), and
+detected_cell_width/detected_cell_height when a terminal report is available.
+
+RENDERING                                               *pdfpreview-rendering*
 
 Automatic selection uses the surface compositor in Otty with Neovim 0.12+
 and a unified-memory Metal device. Other Otty sessions use viewport tiles;
@@ -94,19 +134,23 @@ other terminals use whole-page Unicode placements. Otty has been visually
 tested on macOS. Kitty and Ghostty remain unverified protocol targets.
 
 Surface motion transforms cached pages at fractional pixel positions. After
-input settles, a separate worker redraws visible PDF text and paths at their
-final pixel scale. New motion cancels outdated refinement work. The terminal
-receives raster images; embedded bitmaps retain their source detail limits.
+input settles, a separate worker redraws visible PDF text and paths at up to
+twice the terminal pixel density on each axis, preserving the same cell grid.
+The effective multiplier decreases to stay within 16,777,216 output pixels
+and 8192 pixels per dimension. PdfStats reports refinement_scale, cell_width
+and cell_height. max_dimension limits cached pages, not direct PDF redraws.
+New motion cancels outdated refinement work. The terminal receives raster
+images; embedded bitmaps retain their source detail limits.
 Discrete wheel input is interpolated; native fractional input is not received.
 
 Native CPU/GPU source caches share a 128 MiB limit. Two reusable output
 generations have a separate 64 MiB mapping limit. One refinement viewport
-brings temporary output files to at most 96 MiB. Process memory includes
+brings temporary output files to at most 128 MiB. Process memory includes
 additional document, framework and staging allocations.
 
-Surface output is limited to 8,388,608 pixels, 8192 pixels per dimension,
-256 terminal rows and 16 visible pages. Oversized views, compositor errors
-or missing terminal read acknowledgments fall back to viewport tiles.
+Surface motion output is limited to 8,388,608 pixels, 8192 per dimension,
+256 terminal rows and 16 visible pages. Oversized views, compositor errors or
+missing terminal read acknowledgments fall back to viewport tiles.
 
 Viewport tiles reuse pixels across scrolling and nearby zoom levels.
 Unicode rendering caches whole pages. Visible/in-flight images may exceed
@@ -115,7 +159,7 @@ capped. Zoom and resize preserve the approximate viewport-center position.
 
 Hiding a reader releases terminal images and stops refinement; closing stops
 all workers and removes temporary files after they exit. PDFs remain local.
-PDF buffers disable Snacks scroll animation locally to keep image rows aligned.
+PDF buffers disable Snacks scroll animation to keep image rows aligned.
 
 Only one viewport is maintained per document buffer. PDF text selection,
 search, links, annotations, outlines, SyncTeX and passwords are not supported.

@@ -67,6 +67,64 @@ do
 	check(not backend.parse_info("broken"), "Invalid metadata rejected")
 end
 
+-- Terminal reports may be missing, redirected, rounded or manually calibrated.
+do
+	local ffi = require("ffi")
+	local reports = { [1] = { 40, 100, 1500, 1400 } }
+	package.loaded.ffi = setmetatable({
+		C = {
+			ioctl = function(fd, _, buffer)
+				local report = reports[fd]
+				if not report then
+					return -1
+				end
+				local size = buffer[0]
+				size.row, size.col, size.xpixel, size.ypixel = unpack(report)
+				return 0
+			end,
+		},
+	}, { __index = ffi })
+	local ok, terminal = pcall(dofile, "lua/pdfpreview/terminal.lua")
+	package.loaded.ffi = ffi
+	assert(ok, terminal)
+	local cw, ch, metrics = terminal.cell_size()
+	assert(cw == 15 and ch == 35 and metrics.width_source == "ioctl", "Reported dimensions drive automatic sizing")
+	reports[0], reports[1] = { 40, 100, 1560, 1400 }, nil
+	cw, ch = terminal.cell_size()
+	assert(cw == 15.6 and ch == 35, "Redirected output falls back to stdin and preserves fractional averages")
+	cw, ch, metrics = terminal.cell_size({ cell_width = 16.25 })
+	assert(cw == 16.25 and ch == 35 and metrics.detected_width == 15.6, "Manual width retains the detected height")
+	assert(metrics.width_source == "manual" and metrics.height_source == "ioctl", "Each axis reports its source")
+	cw, ch = terminal.cell_size({ cell_height = 36.5 })
+	assert(cw == 15.6 and ch == 36.5, "Manual height retains the detected width")
+	reports[2], reports[0] = reports[0], { 0, 100, 1560, 1400 }
+	cw, ch = terminal.cell_size()
+	assert(cw == 15.6 and ch == 35, "Invalid grid dimensions are skipped in favor of another terminal descriptor")
+	reports[2] = { 40, 100, 0, 0 }
+	cw, ch, metrics = terminal.cell_size()
+	assert(cw == 9 and ch == 18 and not metrics.detected_width, "Missing pixel dimensions use the documented fallback")
+	assert(metrics.width_source == "fallback" and metrics.height_source == "fallback")
+	cw, ch, metrics = terminal.cell_size({ cell_width = 15.6, cell_height = 35 })
+	assert(
+		cw == 15.6 and ch == 35 and metrics.height_source == "manual",
+		"Manual calibration also works without reports"
+	)
+
+	local viewer = require("pdfpreview")
+	for _, name in ipairs({ "cell_width", "cell_height" }) do
+		for _, invalid in ipairs({ 0, -1, math.huge, 0 / 0, "15", false }) do
+			local valid, err = pcall(viewer.setup, { [name] = invalid })
+			assert(
+				not valid and err:find(name, 1, true),
+				"Invalid overrides fail with an actionable configuration error"
+			)
+		end
+	end
+	viewer.setup({ cell_width = 15.6, cell_height = 35 })
+	viewer.setup()
+	print("PASS: terminal size detection, descriptor fallback, fractional calibration and override validation")
+end
+
 -- Tile coverage at coordinate and pixel limits
 do
 	vim.opt.rtp:prepend(vim.fn.getcwd())

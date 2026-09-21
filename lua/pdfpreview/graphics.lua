@@ -270,27 +270,6 @@ end
 local placeholder = vim.fn.nr2char(0x10EEEE)
 local coordinate_rows = {}
 local placeholder_runs = {}
-local terminal_size
-do
-	local ok, ffi = pcall(require, "ffi")
-	if ok then
-		-- Re-declaring an anonymous struct consumes FFI type IDs even when the
-		-- typedef already exists. Reuse its type across paints and hot reloads.
-		if not pcall(ffi.typeof, "pdfpreview_winsize") then
-			pcall(
-				ffi.cdef,
-				[[
-        typedef struct { unsigned short row, col, xpixel, ypixel; } pdfpreview_winsize;
-        int ioctl(int, unsigned long, ...);
-      ]]
-			)
-		end
-		local allocated, size = pcall(ffi.new, "pdfpreview_winsize")
-		if allocated then
-			terminal_size = { ffi = ffi, size = size, code = vim.fn.has("mac") == 1 and 0x40087468 or 0x5413 }
-		end
-	end
-end
 
 local function coordinates(row, first, last, compact)
 	if compact then
@@ -377,19 +356,6 @@ function M.synchronized(callback)
 	if not restored then
 		error(restore_err, 0)
 	end
-end
-
-function M.cell_size()
-	local cw, ch = 9, 18
-	if terminal_size then
-		pcall(function()
-			local t, sz = terminal_size, terminal_size.size
-			if t.ffi.C.ioctl(1, t.code, sz) == 0 and sz.col > 0 and sz.row > 0 and sz.xpixel > 0 and sz.ypixel > 0 then
-				cw, ch = sz.xpixel / sz.col, sz.ypixel / sz.row
-			end
-		end)
-	end
-	return cw, ch
 end
 
 function M.upload(file, cols, rows, renderer, raster)

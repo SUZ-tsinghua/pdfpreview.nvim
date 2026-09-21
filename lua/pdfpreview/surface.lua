@@ -94,6 +94,32 @@ local function cancel_refinement(s, closing)
 	end
 end
 
+local function refinement_request(source, scale)
+	local request = vim.deepcopy(source)
+	local width = 0
+	for _, part in ipairs(source.parts) do
+		width = math.max(width, part.offset + part.width)
+	end
+	-- Supersample only the settled viewport. Motion keeps its smaller reusable
+	-- outputs; refinement uses at most 64 MiB, including on large displays.
+	scale = math.min(scale, 8192 / width, 8192 / source.height, math.sqrt(16 * 1024 * 1024 / (width * source.height)))
+	local sx = math.floor(width * scale) / width
+	request.height = math.floor(source.height * scale)
+	local sy = request.height / source.height
+	for _, part in ipairs(request.parts) do
+		local left = math.floor(part.offset * sx + 0.5)
+		local right = math.floor((part.offset + part.width) * sx + 0.5)
+		part.offset, part.width = left, right - left
+	end
+	-- Use each output axis's actual scale so integer raster rounding cannot
+	-- stretch the PDF when the terminal fits it back into the same cell grid.
+	for _, page in ipairs(request.pages) do
+		page.left, page.width = page.left * sx, page.width * sx
+		page.top, page.height = page.top * sy, page.height * sy
+	end
+	return request, math.min(sx, sy)
+end
+
 local function schedule_refinement(s, p, config, hooks)
 	local frame = s.frame
 	if (config.surface_refine_ms or 0) <= 0 then
@@ -156,7 +182,7 @@ local function schedule_refinement(s, p, config, hooks)
 					hooks.schedule(s, true)
 					return
 				end
-				local request = vim.deepcopy(p.last_request)
+				local request, scale = refinement_request(p.last_request, config.surface_refine_scale or 1)
 				p.refine_sequence = (p.refine_sequence or 0) + 1
 				local files = {}
 				for index, part in ipairs(request.parts) do
@@ -195,6 +221,7 @@ local function schedule_refinement(s, p, config, hooks)
 					p.awaiting = waiting
 					local refined = vim.tbl_extend("force", {}, target)
 					refined.refining, refined.refined, refined.compose_ms = false, true, result.render_ms
+					refined.refinement_scale = scale
 					local ok, err = pcall(graphics.synchronized, function()
 						for index, part in ipairs(request.parts) do
 							local image = p.entries[index].image

@@ -60,7 +60,7 @@ viewer.setup({
 	auto_open = true,
 	renderer = "auto",
 	rasterizer = "native",
-	cell_width = 15,
+	cell_width = 15.6,
 	cell_height = 35,
 	scroll_animation_ms = 40,
 })
@@ -90,6 +90,12 @@ if s.renderer ~= "surface" then
 end
 assert(s.layout.precise, "Surface geometry is fractional")
 assert(s.frame.refined and s.backend.refiner, "Idle output is redrawn from PDF at the final viewport resolution")
+assert(s.frame.refinement_scale == 2, "Ordinary viewports use the default 2x idle detail scale")
+for index, entry in ipairs(s.surface_state.entries) do
+	local request = s.surface_state.last_request
+	assert(entry.image.width == request.parts[index].width * 2 and entry.image.height == request.height * 2)
+	assert(entry.image.rows == s.height, "Higher pixel density preserves the terminal placement")
+end
 assert(s.backend.refiner.process.pid ~= s.backend.native.process.pid, "Refinement uses an independent document worker")
 assert(
 	s.backend.refiner.cache_bytes == 0

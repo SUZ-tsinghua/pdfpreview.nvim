@@ -362,7 +362,7 @@ do
 			fallback = reason
 		end,
 	}
-	local config = { max_dimension = 4096, surface_refine_ms = 5 }
+	local config = { max_dimension = 4096, surface_refine_ms = 5, surface_refine_scale = 2 }
 	local function paint()
 		if s.surface_state then
 			s.surface_state.last_started = nil
@@ -410,7 +410,21 @@ do
 	end, 1)
 	assert(#refine == 0 and not s.surface_state.refine_error, "Returning waits for the closed worker's actual exit")
 	s.backend.refiner = nil
+	local motion = vim.deepcopy(s.surface_state.last_request)
 	local old = wait_refine()
+	assert(vim.deep_equal(motion, s.surface_state.last_request), "Refinement preserves the reusable motion request")
+	assert(old.request.height == motion.height * 2, "Idle refinement doubles the raster height")
+	for index, part in ipairs(old.request.parts) do
+		assert(part.width == motion.parts[index].width * 2 and part.offset == motion.parts[index].offset * 2)
+	end
+	for index, page in ipairs(old.request.pages) do
+		for _, axis in ipairs({ "left", "top", "width", "height" }) do
+			assert(
+				page[axis] == motion.pages[index][axis] * 2,
+				"Supersampling preserves PDF placement and aspect ratio"
+			)
+		end
+	end
 	assert(
 		not s.surface_state.running and not s.surface_state.awaiting,
 		"Independent refinement does not occupy motion slots"
@@ -431,7 +445,7 @@ do
 	end, s.surface_state.entries)
 	finish(fresh)
 	assert(
-		s.frame.refined and not s.frame.refining and s.surface_state.awaiting,
+		s.frame.refined and s.frame.refinement_scale == 2 and not s.frame.refining and s.surface_state.awaiting,
 		"Idle refinement publishes a final-quality frame"
 	)
 	assert(s.surface_state.read_timer:is_active(), "Refinement file reads have the same watchdog as motion")
@@ -470,7 +484,9 @@ do
 	assert(#refine == 0, "A queued refinement timer cannot run against a newer target")
 	finish(table.remove(compose, 1))
 	ack_all()
+	config.surface_refine_scale = 1
 	local failed = wait_refine()
+	assert(failed.request.height == s.surface_state.last_request.height, "Scale 1 keeps the lower-memory pixel density")
 	finish(failed, 1)
 	assert(
 		not fallback and s.surface_state.refine_error and not s.frame.refining,
@@ -509,9 +525,38 @@ do
 		ack(id)
 	end
 	assert(#vim.fn.glob(dir .. "/*.rgba", false, true) == 0, "Hidden final ACK releases refinement and motion files")
+
+	-- Exercise fractional caps without allocating large fake raster files.
+	active = true
+	config.surface_refine_scale = 2
+	for _, size in ipairs({ { 4001, 1901 }, { 7001, 901 }, { 901, 7001 } }) do
+		s.frame, s.surface_state.surface = nil, nil
+		paint()
+		finish(table.remove(compose, 1))
+		ack_all()
+		local source = s.surface_state.last_request
+		source.height = size[2]
+		source.parts[1].width = math.floor(size[1] / 2)
+		source.parts[2].offset = source.parts[1].width
+		source.parts[2].width = size[1] - source.parts[1].width
+		local capped = wait_refine()
+		local output = capped.request
+		local width = output.parts[1].width + output.parts[2].width
+		assert(width <= 8192 and output.height <= 8192 and width * output.height <= 16 * 1024 * 1024)
+		assert(output.parts[2].offset == output.parts[1].width, "Fractional scaling keeps stripes adjacent")
+		local before, after = source.pages[1], output.pages[1]
+		assert(math.abs(after.width / width - before.width / size[1]) < 1e-12)
+		assert(math.abs(after.height / output.height - before.height / size[2]) < 1e-12)
+		active = false
+		surface.hide(s)
+		assert(capped.cancelled, "Capped refinement still cancels without blocking movement")
+		capped.callback({ code = 1 })
+		active = true
+	end
+
 	surface.hide(s, true)
 	vim.fn.delete(dir, "rf")
 	print(
-		"PASS: refinement cancellation, late results, all-stripe ACKs, output reuse, idle suppression, queued timer races, failure isolation, and hide cleanup"
+		"PASS: bounded supersampling, aspect ratio, refinement cancellation, late results, all-stripe ACKs, output reuse, idle suppression, queued timer races, failure isolation, and hide cleanup"
 	)
 end

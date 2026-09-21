@@ -87,26 +87,37 @@ require("pdfpreview").setup({
   scroll_step = 1,          -- Rows per wheel event
   scroll_animation_ms = 40, -- Surface interpolation; 0 disables it
   surface_refine_ms = 100,  -- Idle detail redraw; 0 disables it
+  surface_refine_scale = 2, -- Idle pixel density multiplier (1–2)
   zoom_step = 1.15,
   min_zoom = 0.1,
   max_zoom = 8,
   max_dimension = 4096,    -- Cached page edge limit in pixels
+  cell_width = nil,       -- Automatic; a positive number overrides detection
+  cell_height = nil,      -- Automatic; fractional overrides are supported
 })
 ```
 
-See `:help pdfpreview-options` for all options. Terminal cell dimensions are detected automatically, with a 9×18 pixel fallback. Set `cell_width` and `cell_height` if the page appears stretched.
+See `:help pdfpreview-options` for all options.
+
+### Cell size detection and calibration
+
+The plugin automatically reads the terminal's reported pixel and grid dimensions and adjusts PDF layout to match. It rechecks on resize, UI attachment, focus gain and drawing, preserving the approximate reading position when dimensions change. Detection uses a lightweight system call with no background polling. If pixel dimensions are unavailable, it falls back to 9×18 pixels. `:checkhealth pdfpreview` shows detected and effective dimensions; `:PdfStats` shows the dimensions used by the current reader and whether each axis comes from `ioctl`, `manual` or `fallback`.
+
+**Automatic detection only has integer pixel reports to work with.** In Otty, these can already reflect rounded cell dimensions. Dividing total pixels by columns/rows may produce a fractional average, but cannot recover precision lost by the terminal. Automatic correction therefore cannot guarantee an exact aspect ratio; accurate calibration may still require manual `cell_width` / `cell_height` values.
+
+If a known square looks too wide, keep the current height and set `cell_width = current_width × displayed_square_width / displayed_square_height`. For example, a reported width of 15 and a square measuring 520×500 on screen suggest `cell_width = 15.6`. This is an example, not a universal Otty setting. Add the override to your plugin options and restart Neovim. Either axis can be overridden independently with a positive fractional value in physical pixels; manual values always take priority. Recalibrate after changing font, font size or display scaling, or remove the overrides to restore automatic detection. See `:help pdfpreview-cell-size`.
 
 ## Rendering and resource use
 
 `renderer = "auto"` selects the Metal `surface` renderer in Otty when supported, otherwise `viewport` tiles. Other terminals use whole-page `unicode` placements. `renderer = "viewport"` can explicitly select the tile path.
 
-Surface motion reuses cached page pixels and two output buffers. Terminal read acknowledgments prevent overwriting files still being read. Once motion settles, a separate worker redraws visible PDF text and paths at the final pixel scale. New input cancels obsolete refinement work. Embedded bitmap images remain limited by their original resolution.
+Surface motion reuses cached page pixels and two output buffers. Terminal read acknowledgments prevent overwriting files still being read. Once motion settles, a separate worker redraws visible PDF text and paths at up to twice the terminal pixel density on each axis. The terminal fits this source into the same cell grid. Refinement is capped at 16,777,216 pixels and 8192 pixels per dimension, so large windows use a smaller multiplier. New input cancels obsolete refinement work. Embedded bitmap images remain limited by their original resolution. `max_dimension` limits cached page pixels, not this direct PDF redraw.
 
-The native source cache is capped at 128 MiB and reusable Metal output mappings at 64 MiB. Surface output files hold at most three viewports, capped at 96 MiB including refinement. These are cache/file limits, not total process-memory limits. Hiding a reader removes terminal images and stops refinement; closing terminates its workers and removes temporary files.
+The native source cache is capped at 128 MiB and reusable Metal output mappings at 64 MiB. Surface output files hold at most three viewports, capped at 128 MiB including refinement. These are cache/file limits, not total process-memory limits. Hiding a reader removes terminal images and stops refinement; closing terminates its workers and removes temporary files.
 
-Setting `surface_refine_ms = 0` reduces idle CPU and memory use at the cost of fine detail at high zoom. `scroll_animation_ms = 0` reduces intermediate frames. Tile rendering reuses source tiles across scrolling and nearby zoom levels; `prefetch_zoom = false` reduces speculative work. Its page/image cache limits are soft because visible and in-flight images must remain available.
+Setting `surface_refine_scale = 1` keeps direct PDF redraws at the terminal's native pixel density, reducing idle CPU, memory and transfer costs. `surface_refine_ms = 0` disables idle redraws at the cost of fine detail at high zoom. `scroll_animation_ms = 0` reduces intermediate frames. Tile rendering reuses source tiles across scrolling and nearby zoom levels; `prefetch_zoom = false` reduces speculative work. Its page/image cache limits are soft because visible and in-flight images must remain available.
 
-Oversized viewports, compositor errors or missing terminal acknowledgments fall back to tiles. `:PdfStats` reports the active path, fallback reason, cache usage and refinement state. Its input-to-frame timing ends at submission and does not measure screen latency.
+Oversized viewports, compositor errors or missing terminal acknowledgments fall back to tiles. `:PdfStats` reports the active path, fallback reason, cache usage, detected/effective cell dimensions and effective refinement scale. Its input-to-frame timing ends at submission and does not measure screen latency.
 
 ## Limitations
 
@@ -134,8 +145,8 @@ make test-native PYTHON=.venv/bin/python
 
 | Suite | Essential coverage |
 | --- | --- |
-| `core.lua` | Layout, tile coverage, image IDs and synchronized output recovery |
-| `reader.lua` | Poppler readers, page boundaries, zoom, split resize and cleanup |
+| `core.lua` | Cell detection, layout, tile coverage, image IDs and output recovery |
+| `reader.lua` | Poppler readers, page boundaries, zoom, dimension changes and cleanup |
 | `surface.lua` | Acknowledgments, cancellation, stale results and bounded file lifetimes |
 | `native.lua` | Actual native workers, idle refinement, protocol validation and fallback |
 | `ui.lua` | Embedded Neovim image transport, nested waits and stable grids |
