@@ -90,7 +90,7 @@ function M.new(s, config, active, repaint)
 		self.generation = self.generation + 1
 		self.pages, self.requested = {}, {}
 		self.start, self.finish, self.first, self.last = nil, nil, nil, nil
-		self.dragging, self.copy_pending, self.error = false, nil, nil
+		self.dragging, self.text_pending, self.error = false, nil, nil
 		changed()
 	end
 	function self:redraw()
@@ -188,8 +188,8 @@ function M.new(s, config, active, repaint)
 			end
 		end
 		self:schedule()
-		if self.copy_pending then
-			self:copy(self.copy_pending)
+		if self.text_pending then
+			self:value(self.text_pending)
 		end
 	end
 	function self:load(n)
@@ -204,7 +204,7 @@ function M.new(s, config, active, repaint)
 				return
 			end
 			if not page then
-				self.error, self.copy_pending = err, nil
+				self.error, self.text_pending = err, nil
 				notice(err, vim.log.levels.ERROR)
 				return
 			end
@@ -212,7 +212,7 @@ function M.new(s, config, active, repaint)
 			changed()
 			if self.start and n == self.start.page and #page.words == 0 then
 				notice("This page has no selectable text (scanned PDFs need OCR).")
-				self.copy_pending = nil
+				self.text_pending = nil
 			end
 			self:resolve()
 		end)
@@ -220,6 +220,9 @@ function M.new(s, config, active, repaint)
 	function self:mouse(kind, mouse)
 		mouse = mouse or vim.fn.getmousepos()
 		if kind == "release" then
+			if not self.dragging then
+				return
+			end
 			self.dragging = false
 		end
 		if mouse.winid ~= s.win or not active(s) or not s.frame then
@@ -251,21 +254,20 @@ function M.new(s, config, active, repaint)
 		self:load(point.page)
 		self:resolve()
 	end
-	function self:copy(register)
-		register = register or "+"
+	function self:value(callback)
 		if self.error then
 			return
 		end
 		if not self.first then
 			if self.start and self.finish and (not self.pages[self.start.page] or not self.pages[self.finish.page]) then
-				self.copy_pending = register
+				self.text_pending = callback
 			else
 				notice("Select PDF text with the left mouse button first.")
-				self.copy_pending = nil
+				self.text_pending = nil
 			end
 			return
 		end
-		self.copy_pending = register
+		self.text_pending = callback
 		for n = self.first.page, self.last.page do
 			self:load(n)
 		end
@@ -273,23 +275,31 @@ function M.new(s, config, active, repaint)
 		if not value or value == "" then
 			return
 		end
-		self.copy_pending = nil
-		if register == "_" then
-			return value
-		end
-		vim.fn.setreg('"', value, "v")
-		vim.fn.setreg("0", value, "v")
-		if register ~= '"' and register ~= "0" then
-			if (register == "+" or register == "*") and vim.fn.has("clipboard") ~= 1 then
-				notice(
-					"Copied to the unnamed register; no system clipboard provider is available.",
-					vim.log.levels.WARN
-				)
-			else
-				vim.fn.setreg(register, value, "v")
-			end
+		self.text_pending = nil
+		if callback then
+			callback(value)
 		end
 		return value
+	end
+	function self:copy(register)
+		register = register or "+"
+		return self:value(function(value)
+			if register == "_" then
+				return
+			end
+			vim.fn.setreg('"', value, "v")
+			vim.fn.setreg("0", value, "v")
+			if register ~= '"' and register ~= "0" then
+				if (register == "+" or register == "*") and vim.fn.has("clipboard") ~= 1 then
+					notice(
+						"Copied to the unnamed register; no system clipboard provider is available.",
+						vim.log.levels.WARN
+					)
+				else
+					vim.fn.setreg(register, value, "v")
+				end
+			end
+		end)
 	end
 	function self:close()
 		self:clear()

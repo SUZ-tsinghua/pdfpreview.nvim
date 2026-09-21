@@ -26,6 +26,9 @@ COMMANDS                                                 *pdfpreview-commands*
 :PdfCopy                                                  *:PdfCopy*
         Copy selected PDF text to the system clipboard (+ register).
         If no clipboard provider is available, keep it in the unnamed register.
+:PdfTranslate                                            *:PdfTranslate*
+        Translate selected PDF text in a floating window.
+        See |pdfpreview-translation|.
 :PdfReload                                               *:PdfReload*
         Reload the current document from disk.
 :PdfStats                                                *:PdfStats*
@@ -43,6 +46,7 @@ MAPPINGS                                                 *pdfpreview-mappings*
 Left click/drag   Select a word or range of PDF text.
 y / "ay           Copy selected text to the unnamed / named register.
 Ctrl-C / Cmd-C    Copy to the system clipboard (when forwarded by the terminal).
+Right click       Open Copy / Translate menu.
 Escape            Clear text selection.
 j/k, Up/Down       Scroll one row; counts supported.
 h/l, Left/Right    Pan horizontally; counts supported.
@@ -79,6 +83,34 @@ The executable can be configured with the pdftotext option below.
 Lua API: require("pdfpreview").copy(register) copies the current selection;
 the default register is "+". A ready selection returns the copied string,
 otherwise copying completes asynchronously. clear_selection() removes it.
+
+TRANSLATION                                              *pdfpreview-translation*
+
+Right-click selected text and choose Translate, or use :PdfTranslate. Without
+an existing selection, right-clicking a word selects it first. Click outside,
+press q or Escape to close the menu/result without closing the PDF. Translation
+runs asynchronously; closing the float cancels pending work.
+
+The default translates English to Simplified Chinese using Google's free web
+endpoint and falls back to MyMemory for short selections (up to 500 UTF-8
+bytes). curl and internet access are required; no account/API key is needed.
+Only choosing Translate sends selected text to the service(s). Opening the
+menu, selecting and copying remain local. Free endpoints may be unavailable
+or rate-limited; errors appear in the float. Up to 32 results are cached in
+memory. Selections above 5000 bytes are rejected without truncation.
+
+Options (within setup's translation table):
+>
+    translation = {
+      provider = "google", -- or "mymemory"
+      source = "en",
+      target = "zh-CN",
+      fallback = true,     -- MyMemory after a Google failure
+      timeout = 10,        -- seconds per service, 1-60
+    }
+<
+source="auto" works with Google but disables MyMemory fallback, since MyMemory
+requires an explicit source language. Lua API: require("pdfpreview").translate().
 
 OPTIONS                                                  *pdfpreview-options*
 

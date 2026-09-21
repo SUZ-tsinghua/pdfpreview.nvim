@@ -54,7 +54,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pdfpreview-tests-") as temporary:
         env = dict(os.environ, NVIM_LOG_FILE=str(Path(temporary) / "nvim.log"))
         lua = [nvim, "--headless", "-u", "NONE", "-i", "NONE", "-l"]
-        suites = ["core", "reader", "surface", "selection"]
+        suites = ["core", "reader", "surface", "selection", "translate"]
         if args.native:
             suites.append("native")
         for suite in suites:

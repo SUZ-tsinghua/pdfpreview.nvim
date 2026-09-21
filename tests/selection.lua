@@ -316,7 +316,7 @@ for _, renderer in ipairs(renderers) do
 	mouse("release", 1, 2)
 	viewer.copy("a")
 	wait(function()
-		return s.selection.first ~= nil and not s.selection.copy_pending
+		return s.selection.first ~= nil and not s.selection.text_pending
 	end, "Mouse coordinates resolve after a font change")
 	assert(vim.fn.getreg("a") == "PDF PREVIEW")
 	viewer.config.cell_width, viewer.config.cell_height = 10, 20
@@ -471,6 +471,94 @@ local ok, err = pcall(function()
 		assert(
 			request("nvim_exec_lua", "return vim.fn.mode() == 'n' and not s.selection.dragging", {}),
 			"PDF dragging stays in normal mode and receives button release"
+		)
+
+		-- Exercise the context menu with real input, including popup-mode mouse.
+		request(
+			"nvim_exec_lua",
+			[[
+			vim.o.mousemodel = 'popup_setpos'
+			translation_calls, translation_cancelled = 0, 0
+			require('pdfpreview.translate').request = function(value, config, callback)
+				assert(value == 'PDF PREVIEW')
+				translation_calls = translation_calls + 1
+				translation_callback = callback
+				return {kill=function() translation_cancelled = translation_cancelled + 1 end}
+			end
+		]],
+			{}
+		)
+		local function right_menu()
+			request("nvim_input_mouse", "right", "press", "", 0, positions[2][1], positions[2][2])
+			wait(function()
+				return request("nvim_exec_lua", "return s.context.popup ~= nil", {})
+			end, "Right click opens the PDF menu")
+			request("nvim_input_mouse", "right", "release", "", 0, positions[2][1], positions[2][2])
+			assert(
+				request("nvim_exec_lua", "return s.selection:value() == 'PDF PREVIEW'", {}),
+				"Right click preserves selected text"
+			)
+		end
+		right_menu()
+		assert(
+			request("nvim_exec_lua", "return translation_calls == 0", {}),
+			"Opening a menu never sends text to a service"
+		)
+		request("nvim_input_mouse", "left", "press", "", 0, 0, 0)
+		wait(function()
+			return request("nvim_exec_lua", "return s.context.popup == nil", {})
+		end, "Clicking outside dismisses the menu")
+		request("nvim_input_mouse", "left", "release", "", 0, 0, 0)
+		for _, key in ipairs({ "q", "<Esc>" }) do
+			right_menu()
+			request("nvim_input", key)
+			wait(function()
+				return request("nvim_exec_lua", "return s.context.popup == nil", {})
+			end, "Popup close key " .. key)
+			assert(
+				request("nvim_exec_lua", "return not s.closed and s.selection:value() == 'PDF PREVIEW'", {}),
+				"Popup keys preserve reader and selection"
+			)
+		end
+		right_menu()
+		local menu = request("nvim_exec_lua", "return vim.api.nvim_win_get_position(s.context.popup.win)", {})
+		request("nvim_input_mouse", "left", "press", "", 0, menu[1] + 2, menu[2] + 2)
+		wait(function()
+			return request("nvim_exec_lua", "return translation_calls == 1", {})
+		end, "Clicking Translate starts one request")
+		request(
+			"nvim_exec_lua",
+			"translation_callback('中文译文'); assert(vim.api.nvim_buf_get_lines(s.context.popup.buf,0,1,false)[1] == '中文译文')",
+			{}
+		)
+		request("nvim_input_mouse", "left", "press", "", 0, 0, 0)
+		wait(function()
+			return request("nvim_exec_lua", "return s.context.popup == nil", {})
+		end, "Translation float dismisses on outside click")
+		right_menu()
+		request("nvim_input", "j<CR>")
+		wait(function()
+			return request("nvim_exec_lua", "return translation_calls == 2", {})
+		end, "Keyboard menu selection translates")
+		request("nvim_input", "q")
+		wait(function()
+			return request("nvim_exec_lua", "return s.context.popup == nil and translation_cancelled == 1", {})
+		end, "Closing a pending translation cancels it")
+		request("nvim_exec_lua", "translation_callback('obsolete'); assert(not s.context.popup)", {})
+		request(
+			"nvim_exec_lua",
+			[[
+			local value = s.selection.value
+			local extracted
+			s.selection.value = function(_, callback) extracted = callback end
+			s.context:translate()
+			s.context:close()
+			s.selection.value = value
+			extracted('PDF PREVIEW')
+			assert(not s.context.popup and translation_calls == 2,
+				'Closing while text loads must not reopen a float or contact the service')
+		]],
+			{}
 		)
 
 		request("nvim_input", "<Esc>")

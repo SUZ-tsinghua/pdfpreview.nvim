@@ -51,6 +51,7 @@ An unpublished or development checkout can live anywhere. Replace `"SUZ-tsinghua
 :PdfZoom 137.5
 :PdfPage 12
 :PdfCopy
+:PdfTranslate
 :PdfReload
 :PdfStats
 :PdfClose
@@ -63,6 +64,7 @@ With `auto_open = true`, `:edit document.pdf` opens the reader. `:PdfOpen` witho
 | Left click / drag | Select a word / range of PDF text |
 | `y` / `"ay` | Copy selected text to the unnamed / named register |
 | Ctrl-C / `:PdfCopy` | Copy selected text to the system clipboard |
+| Right click | Open Copy / Translate menu |
 | Escape | Clear text selection |
 | Wheel / trackpad scroll | Scroll across page boundaries |
 | `j` / `k`, Up / Down | Scroll one row; counts supported |
@@ -80,6 +82,10 @@ Zoom is relative to fit width: 100% fits the widest page, and the default range 
 
 Drag from a word to select through another word, then press `y` to yank or Ctrl-C to copy. Cmd-C also works when forwarded to Neovim by the terminal. Hold the mouse button and scroll to extend the selection onto another page. Selection follows the document through zooming and panning, with a translucent blue highlight. The surface renderer includes the highlight in the PDF pixels, including during refinement and sidebar resizing. Other renderers temporarily hide highlights when a popup overlaps the PDF, while retaining the selection.
 
+Right-click selected text to **copy** or **translate** it. Translation appears in a Neovim floating window; click outside, press `q` or Escape to dismiss the menu or result without closing the PDF. Without an existing selection, right-clicking a word selects it first. `:PdfTranslate` translates the current selection too.
+
+Translation defaults to English → Simplified Chinese through Google's free web endpoint, with MyMemory as a fallback for short selections (up to 500 UTF-8 bytes). It needs `curl` and internet access, with no account or API key. Only choosing Translate sends the selected text to these services. Free services can impose quotas or change their endpoints; failures appear in the float. Repeated results are cached in memory (32 entries). Disable automatic fallback with `translation = { fallback = false }`, or select MyMemory directly with `translation = { provider = "mymemory" }`.
+
 Text is extracted locally from the PDF's text layer on demand. Selection snaps to words at terminal-cell mouse precision and preserves extracted line breaks and reading order; columns and unusual PDF encodings can affect that order. Scanned pages without a text layer need OCR first. If `pdftotext` is missing, rendering still works and `:checkhealth pdfpreview` reports the missing dependency. Clipboard copying needs a Neovim clipboard provider; without one, the text remains available in the unnamed register.
 
 True pinch-to-zoom is not supported. The plugin receives discrete wheel events; the surface renderer interpolates their movement over 40 ms by default.
@@ -93,6 +99,7 @@ require("pdfpreview").setup({
   auto_open = false,
   renderer = "auto",       -- auto, surface, viewport, unicode
   rasterizer = "auto",     -- auto, native, poppler
+  translation = { source = "en", target = "zh-CN", provider = "google", fallback = true, timeout = 10 },
   scroll_step = 1,          -- Rows per wheel event
   scroll_animation_ms = 40, -- Surface interpolation; 0 disables it
   surface_refine_ms = 100,  -- Idle detail redraw; 0 disables it
@@ -158,7 +165,8 @@ make test-native PYTHON=.venv/bin/python
 | `core.lua` | Cell detection, layout, tile coverage, image IDs and output recovery |
 | `reader.lua` | Poppler readers, page boundaries, zoom, dimension changes and cleanup |
 | `surface.lua` | Acknowledgments, cancellation, stale results and bounded file lifetimes |
-| `selection.lua` | Text extraction, drag/yank mappings, cross-page copying, font changes, refinement and cleanup |
+| `selection.lua` | Text extraction, drag/yank and context-menu mouse events, cross-page copying, popup dismissal and cleanup |
+| `translate.lua` | Translation parsing, stdin transport, bounded cache, fallback, errors and cancellation |
 | `native.lua` | Actual native workers, idle refinement, protocol validation and fallback |
 | `ui.lua` | Embedded Neovim image transport, nested waits and stable grids |
 | `pixels.py` | Rotation/cropping, Metal pixels, cache eviction and vector detail |

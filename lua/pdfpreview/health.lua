@@ -3,6 +3,11 @@ function M.check()
 	local health = vim.health
 	local config = require("pdfpreview").config
 	health.start("pdfpreview.nvim")
+	if vim.fn.executable("curl") == 1 then
+		health.ok("Translation: curl (free online services, no API key required)")
+	else
+		health.warn("curl was not found; right-click translation is unavailable", "Install curl")
+	end
 	if vim.fn.has("nvim-0.11") == 1 then
 		health.ok("Neovim 0.11 or newer")
 	else

@@ -7,6 +7,7 @@ local backend = require("pdfpreview.backend")
 local tiles = require("pdfpreview.tiles")
 local surface = require("pdfpreview.surface")
 local selection = require("pdfpreview.selection")
+local context = require("pdfpreview.context")
 local ns = api.nvim_create_namespace("pdfpreview")
 local states = {}
 M.defaults = {
@@ -20,6 +21,7 @@ M.defaults = {
 	pdfinfo = "pdfinfo",
 	pdftoppm = "pdftoppm",
 	pdftotext = "pdftotext",
+	translation = { provider = "google", source = "en", target = "zh-CN", timeout = 10, fallback = true },
 	scroll_step = 1,
 	scroll_animation_ms = 40,
 	surface_refine_ms = 100,
@@ -841,6 +843,13 @@ function M.clear_selection()
 	end
 end
 
+function M.translate()
+	local s = current()
+	if s then
+		s.context:translate()
+	end
+end
+
 function M.scroll(dy, dx)
 	local s = current()
 	if not s or not s.pages then
@@ -1013,6 +1022,22 @@ local function mappings(s)
 			end, { buffer = s.buf, silent = true, expr = true, desc = "Select PDF text" })
 		end
 	end
+	for _, prefix in ipairs({ "", "2-", "3-", "4-" }) do
+		local key = "<" .. prefix .. "RightMouse>"
+		vim.keymap.set("n", key, function()
+			local mouse = vim.fn.getmousepos()
+			if mouse.winid ~= s.win then
+				return key
+			end
+			vim.schedule(function()
+				if active(s) then
+					s.context:open(mouse)
+				end
+			end)
+			return ""
+		end, { buffer = s.buf, silent = true, expr = true, desc = "PDF copy and translation menu" })
+	end
+	map({ "<RightRelease>", "<RightDrag>" }, function() end, "PDF context menu")
 	map("y", function()
 		M.copy(vim.v.register)
 	end, "Yank selected PDF text")
@@ -1077,6 +1102,7 @@ local function mappings(s)
 end
 
 local function hide(s)
+	s.context:close()
 	s.selection:hide()
 	s.selection.dragging = false
 	surface.hide(s)
@@ -1094,6 +1120,7 @@ local function dispose(s)
 	if s.closed then
 		return
 	end
+	s.context:close()
 	surface.hide(s, true)
 	s.selection:close()
 	s.closed = true
@@ -1150,6 +1177,7 @@ function M.open(file, buf)
 	end
 	local s = { buf = buf, path = file, zoom = 1, x = 0, y = 0, renderer = renderer }
 	s.selection = selection.new(s, M.config, active, schedule)
+	s.context = context.new(s, M.config)
 	states[buf] = s
 	s.backend = backend.new(file, M.config, function()
 		schedule(s, true)
@@ -1212,6 +1240,15 @@ function M.setup(opts)
 	assert(vim.tbl_contains({ "auto", "native", "poppler" }, M.config.rasterizer), "Invalid rasterizer")
 	assert(type(M.config.compact_placeholders) == "boolean", "compact_placeholders must be boolean")
 	assert(type(M.config.prefetch_zoom) == "boolean", "prefetch_zoom must be boolean")
+	local translation = M.config.translation
+	assert(vim.tbl_contains({ "google", "mymemory" }, translation.provider), "Invalid translation provider")
+	assert(type(translation.source) == "string" and translation.source:match("^[%a%-]+$"), "Invalid translation source")
+	assert(type(translation.target) == "string" and translation.target:match("^[%a%-]+$"), "Invalid translation target")
+	assert(
+		type(translation.timeout) == "number" and translation.timeout >= 1 and translation.timeout <= 60,
+		"Translation timeout must be between 1 and 60 seconds"
+	)
+	assert(type(translation.fallback) == "boolean", "translation.fallback must be boolean")
 	assert(
 		type(M.config.image_cache_bytes) == "number"
 			and M.config.image_cache_bytes >= 1024
@@ -1259,6 +1296,7 @@ function M.setup(opts)
 	api.nvim_create_user_command("PdfCopy", function()
 		M.copy("+")
 	end, { force = true })
+	api.nvim_create_user_command("PdfTranslate", M.translate, { force = true })
 	api.nvim_create_user_command("PdfReload", M.reload, { force = true })
 	api.nvim_create_user_command("PdfStats", function()
 		local stats = M.stats()
